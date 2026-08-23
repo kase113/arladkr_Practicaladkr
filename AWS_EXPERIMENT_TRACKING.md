@@ -3214,3 +3214,8 @@ original `11/21/11` 在 32 vCPU/39 GiB 主机上得到 `22/32` 结果，达到 q
 
 该轮证明 validator-pull 在 n=32 至少具备 quorum 活性；22/32 不是完整性能基准，仍需补充
 source failure、validator failure 和多 origin fallback 后再比较 flood/tree。
+
+同配置的 origin-set fallback 复跑（r2）在本机资源调度下出现 `22` 个 partial result，但最终
+均为 MVBA `quitpd` deadline，未形成有效 E2E 基准；该轮 invalidated，不覆盖前一轮达到 quorum
+的结果。当前证据说明 fallback 代码通过单测且不破坏 n=4，但 n=32 的活性仍受本机 32 vCPU
+调度和协议 timeout 影响，不能把一次成功或失败外推为正式性能结论。

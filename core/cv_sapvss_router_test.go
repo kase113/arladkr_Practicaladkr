@@ -16,6 +16,12 @@ type cvRouterTestTransport struct {
 	recvCalls map[int]int
 	sent      []Message
 	closes    int
+	drops     map[cvRouterDropKey]int
+}
+
+type cvRouterDropKey struct {
+	from, to int
+	tag      string
 }
 
 func newCVRouterTestTransport(nodes []int, buffer int) *cvRouterTestTransport {
@@ -23,7 +29,13 @@ func newCVRouterTestTransport(nodes []int, buffer int) *cvRouterTestTransport {
 	for _, node := range nodes {
 		inbox[node] = make(chan Message, buffer)
 	}
-	return &cvRouterTestTransport{inbox: inbox, recvCalls: make(map[int]int)}
+	return &cvRouterTestTransport{inbox: inbox, recvCalls: make(map[int]int), drops: make(map[cvRouterDropKey]int)}
+}
+
+func (t *cvRouterTestTransport) dropNext(from, to int, tag string) {
+	t.mu.Lock()
+	t.drops[cvRouterDropKey{from: from, to: to, tag: tag}]++
+	t.mu.Unlock()
 }
 
 func (t *cvRouterTestTransport) RecvChan(id int) (<-chan Message, error) {
@@ -39,6 +51,12 @@ func (t *cvRouterTestTransport) RecvChan(id int) (<-chan Message, error) {
 
 func (t *cvRouterTestTransport) Send(msg Message) error {
 	t.mu.Lock()
+	key := cvRouterDropKey{from: msg.From, to: msg.To, tag: msg.Tag}
+	if t.drops[key] > 0 {
+		t.drops[key]--
+		t.mu.Unlock()
+		return nil
+	}
 	ch, ok := t.inbox[msg.To]
 	t.sent = append(t.sent, Message{From: msg.From, To: msg.To, Tag: msg.Tag, Body: append([]byte(nil), msg.Body...)})
 	t.mu.Unlock()
@@ -120,6 +138,30 @@ func (t *cvRouterTestTransport) closeCount() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return t.closes
+}
+
+func TestCVRouterTestTransportDropsOnlyConfiguredMessage(t *testing.T) {
+	transport := newCVRouterTestTransport([]int{1, 2}, 4)
+	transport.dropNext(1, 2, "DROP_ME")
+	if err := transport.Send(Message{From: 1, To: 2, Tag: "DROP_ME"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-transport.inbox[2]:
+		t.Fatal("configured message was delivered")
+	default:
+	}
+	if err := transport.Send(Message{From: 1, To: 2, Tag: "KEEP_ME"}); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case msg := <-transport.inbox[2]:
+		if msg.Tag != "KEEP_ME" {
+			t.Fatalf("tag=%s", msg.Tag)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("non-dropped message was not delivered")
+	}
 }
 
 func TestCVNetworkEnvelopeRoundTripAndCanonicalValidation(t *testing.T) {

@@ -620,7 +620,6 @@ func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateAnnounceV2(msg Message)
 	s.mu.Lock()
 	s.candidateOriginsV2[digest] = origin
 	s.mu.Unlock()
-	target := origin
 	if cvCandidateFanoutModeV2() == cvCandidateFanoutValidatorPullV2 {
 		if _, validators, sampleErr := cvAgreementEligibilitySamplesV2Must(s); sampleErr == nil {
 			localValidator := false
@@ -631,15 +630,40 @@ func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateAnnounceV2(msg Message)
 				}
 			}
 			if !localValidator {
-				if len(validators) > 0 {
-					target = validators[0]
-				}
+				go s.fetchCandidateWithValidatorFallbackV2(digest, origin, validators)
+				return
 			}
 		}
 	}
 	request, err := cvEncodeCertifiedCandidateDigestRequestV2(digest)
 	if err == nil {
-		_ = s.sendPriorityAsync(target, cvTagCertifiedCandidateFetchV2, request, nil)
+		_ = s.sendPriorityAsync(origin, cvTagCertifiedCandidateFetchV2, request, nil)
+	}
+}
+
+func (s *cvAPDBNetworkServiceV2) fetchCandidateWithValidatorFallbackV2(digest string, origin int, validators []int) {
+	request, err := cvEncodeCertifiedCandidateDigestRequestV2(digest)
+	if err != nil {
+		return
+	}
+	for _, validator := range validators {
+		if validator == s.cfg.LocalNode {
+			continue
+		}
+		if len(s.cachedCertifiedCandidateWireV2(digest)) != 0 {
+			return
+		}
+		_ = s.sendPriorityAsync(validator, cvTagCertifiedCandidateFetchV2, request, nil)
+		timer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-s.ctx.Done():
+			timer.Stop()
+			return
+		}
+	}
+	if len(s.cachedCertifiedCandidateWireV2(digest)) == 0 && origin != s.cfg.LocalNode {
+		_ = s.sendPriorityAsync(origin, cvTagCertifiedCandidateFetchV2, request, nil)
 	}
 }
 

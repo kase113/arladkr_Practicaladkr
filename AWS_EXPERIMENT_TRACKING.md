@@ -3193,3 +3193,19 @@ sample 节点向 origin 拉取完整 candidate，非 validator 节点向确定�
 n=4 smoke 为 `4/4`、无错误、单一 consensus hash。该结果证明 validator-aware pull 的基本
 请求链和认证绑定可用，但尚未证明 source failure、validator failure 或 n=32 以上的 quorum
 可用性；下一轮应先加入多 validator fallback，再进行 n=32 A/B。
+
+### Validator-pull fallback n=32 回归（本地新机器，2026-08-23）
+
+加入 validator sample 顺序 fallback：非 validator 会依次向 sample validators 发起 digest fetch，
+若仍未缓存再回退 origin；validator 仍会保留 waiter 并代 origin 拉取。`n=32,f=10`、论文
+original `11/21/11` 在 32 vCPU/39 GiB 主机上得到 `22/32` 结果，达到 quorum 22，无
+`EPOCH_RUN_ERROR`、panic 或 OOM，且结果共享单一 consensus hash。成功节点均值为：
+
+| 指标 | 值 |
+| --- | ---: |
+| E2E raw / setup-adjusted | `38.88 / 38.47 s` |
+| total sent/recv 每节点 | `47.23 / 34.83 MB` |
+| candidate relay tag sent | 约 `0.01 MB` |
+
+该轮证明 validator-pull 在 n=32 至少具备 quorum 活性；22/32 不是完整性能基准，仍需补充
+source failure、validator failure 和多 origin fallback 后再比较 flood/tree。

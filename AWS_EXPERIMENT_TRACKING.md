@@ -3215,6 +3215,14 @@ original `11/21/11` 在 32 vCPU/39 GiB 主机上得到 `22/32` 结果，达到 q
 该轮证明 validator-pull 在 n=32 至少具备 quorum 活性；22/32 不是完整性能基准，仍需补充
 source failure、validator failure 和多 origin fallback 后再比较 flood/tree。
 
+### Source failure injection（本地 n=4，2026-08-24）
+
+在 validator-pull 启动完成 setup 后主动停止 node 0。该轮没有有效 E2E；其余节点等待完整
+candidate/MVBA value，直到测试窗口结束。原因是单一 candidate digest 只有一个 origin 时，
+origin-set fallback 没有可切换的第二份完整 payload；保存 origin 集合只能在多个 proposer 已经
+持有同一 digest 时提供替代来源，不能凭空恢复被停止的唯一 source。下一步应先设计 proposer
+candidate replication/validator prefetch，再做 source failure 的正式活性测试。
+
 同配置的 origin-set fallback 复跑（r2）在本机资源调度下出现 `22` 个 partial result，但最终
 均为 MVBA `quitpd` deadline，未形成有效 E2E 基准；该轮 invalidated，不覆盖前一轮达到 quorum
 的结果。当前证据说明 fallback 代码通过单测且不破坏 n=4，但 n=32 的活性仍受本机 32 vCPU

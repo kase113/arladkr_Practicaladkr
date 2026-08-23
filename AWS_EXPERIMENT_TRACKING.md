@@ -3246,3 +3246,14 @@ source/validator failure A/B。
 回归。10/10 节点完成，达到 quorum 7，无错误或 OOM，结果共享单一 consensus hash。setup 调整
 后的 E2E 均值约 `2.04 s`；每节点 total sent/recv 约 `7.50/7.50 MB`。这说明在较小拓扑下
 validator-pull 没有明显活性问题，但不能替代 n=32 的正式性能结论。
+
+### 小规模 validator-pull n=16 通信回归（本地新机器，2026-08-24）
+
+单轮 `n=16,f=5` validator-pull 产生 `15/16` 结果，超过 quorum 11，无错误/OOM，单一
+consensus hash。setup-adjusted E2E 均值约 `4.75 s`，每节点 total sent/recv 为
+`7.64/7.08 MB`，candidate relay 约 `0.010 MB`，recover shard sent 约 `2.97 MB`。
+
+与用户提供的 PracticalADKR n=32 `6.87 MB/节点` 对比前，必须确认该数是 sent、recv 还是
+sent+recv 总和：若按单向 sent 比较，ARL n=16 的 `7.64 MB` 并不更低；若按双向总量比较，
+ARL 为约 `14.72 MB`，更不能宣称通信明显优于 PracticalADKR。当前只能确认 validator-pull
+显著压低了 candidate relay 本身，不能证明端到端总通信已优于 PracticalADKR。

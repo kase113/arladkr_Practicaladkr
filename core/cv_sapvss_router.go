@@ -9,49 +9,54 @@ import (
 )
 
 const (
-	cvNetworkEnvelopeVersion     = byte(1)
-	cvMaxNetworkEnvelopeSIDBytes = 1 << 20
-	cvMaxNetworkPayloadBytes     = cvMaxLeafWireBytes + 1<<20
-	cvNetworkEnvelopeFixedBytes  = 1 + 4 + 8 + 4
-	cvTagComponentInit           = "CV_COMPONENT_INIT"
-	cvTagComponentAck            = "CV_COMPONENT_ACK"
-	cvTagComponentCert           = "CV_COMPONENT_CERT"
-	cvTagComponentGet            = "CV_COMPONENT_GET"
-	cvTagComponentLeaf           = "CV_COMPONENT_LEAF"
-	cvTagComponentReady          = "CV_COMPONENT_READY"
-	cvTagEligibilityShare        = "CV_ELIGIBILITY_SHARE"
-	cvTagAggregateManifest       = "CV_AGG_MANIFEST"
-	cvTagARCShare                = "CV_ARC_SHARE"
-	cvTagARCCertificate          = "CV_ARC_CERTIFICATE"
-	cvTagRecoverGet              = "CV_RECOVER_GET"
-	cvTagRecoverShard            = "CV_RECOVER_SHARD"
-	cvTagRecoverDone             = "CV_RECOVER_DONE"
-	cvTagReceipt                 = "CV_RECEIPT"
-	cvTagReceiptDone             = "CV_RECEIPT_DONE"
-	apvssTagLaneOffer            = "APVSS_LANE_OFFER"
-	apvssTagLaneACK              = "APVSS_LANE_ACK"
-	cvTagHandoffV2               = "CV_V2_HANDOFF"
-	cvTagAPDBStoreV2             = "CV_V2_APDB_STORE"
-	cvTagAPDBStoredShareV2       = "CV_V2_APDB_STORED_SHARE"
-	cvTagAPDBRecoverGetV2        = "CV_V2_APDB_RECOVER_GET"
-	cvTagAPDBRecoverStoreV2      = "CV_V2_APDB_RECOVER_STORE"
-	cvTagAPDBRecoverPayloadV2    = "CV_V2_APDB_RECOVER_PAYLOAD"
-	cvTagAggregateRecoverGetV2   = "CV_V2_AGG_RECOVER_GET"
-	cvTagAggregateRecoverStoreV2 = "CV_V2_AGG_RECOVER_STORE"
-	cvTagCoinShareV2             = "CV_V2_COIN_SHARE"
-	cvTagPoolOfferV2             = "CV_V2_POOL_OFFER"
-	cvTagPoolCertShareV2         = "CV_V2_POOL_CERT_SHARE"
-	cvTagPoolCertV2              = "CV_V2_POOL_CERT"
-	cvTagValidationRequestV2     = "CV_V2_VALIDATION_REQUEST"
-	cvTagValidationSignatureV2   = "CV_V2_VALIDATION_SIGNATURE"
-	cvTagValidationResultV2      = "CV_V2_VALIDATION_RESULT"
-	cvTagDecisionShareV2         = "CV_V2_DECISION_SHARE"
-	cvTagAggregateShareV2        = "CV_V2_AGGREGATE_SHARE"
-	cvTagLaneOfferV2             = "CV_V2_LANE_OFFER"
-	cvTagLaneACKV2               = "CV_V2_LANE_ACK"
-	cvTagComponentRefV2          = "CV_V2_COMPONENT_REF"
-	cvTagCertifiedCandidateV2    = "CV_V2_CERTIFIED_CANDIDATE"
-	cvTagCertifiedCandidateACKV2 = "CV_V2_CERTIFIED_CANDIDATE_ACK"
+	cvNetworkEnvelopeVersion          = byte(1)
+	cvMaxNetworkEnvelopeSIDBytes      = 1 << 20
+	cvMaxNetworkPayloadBytes          = cvMaxLeafWireBytes + 1<<20
+	cvNetworkEnvelopeFixedBytes       = 1 + 4 + 8 + 4
+	cvTagComponentInit                = "CV_COMPONENT_INIT"
+	cvTagComponentAck                 = "CV_COMPONENT_ACK"
+	cvTagComponentCert                = "CV_COMPONENT_CERT"
+	cvTagComponentGet                 = "CV_COMPONENT_GET"
+	cvTagComponentLeaf                = "CV_COMPONENT_LEAF"
+	cvTagComponentReady               = "CV_COMPONENT_READY"
+	cvTagEligibilityShare             = "CV_ELIGIBILITY_SHARE"
+	cvTagAggregateManifest            = "CV_AGG_MANIFEST"
+	cvTagARCShare                     = "CV_ARC_SHARE"
+	cvTagARCCertificate               = "CV_ARC_CERTIFICATE"
+	cvTagRecoverGet                   = "CV_RECOVER_GET"
+	cvTagRecoverShard                 = "CV_RECOVER_SHARD"
+	cvTagRecoverDone                  = "CV_RECOVER_DONE"
+	cvTagReceipt                      = "CV_RECEIPT"
+	cvTagReceiptDone                  = "CV_RECEIPT_DONE"
+	apvssTagLaneOffer                 = "APVSS_LANE_OFFER"
+	apvssTagLaneACK                   = "APVSS_LANE_ACK"
+	cvTagHandoffV2                    = "CV_V2_HANDOFF"
+	cvTagAPDBStoreV2                  = "CV_V2_APDB_STORE"
+	cvTagAPDBStoredShareV2            = "CV_V2_APDB_STORED_SHARE"
+	cvTagAggregateAPDBStoreV2         = "CV_V2_ARC__STORE"
+	cvTagAggregateARCShareV2          = "CV_V2_ARC__STORED_SHARE"
+	cvTagAPDBRecoverGetV2             = "CV_V2_APDB_RECOVER_GET"
+	cvTagAPDBRecoverStoreV2           = "CV_V2_APDB_RECOVER_STORE"
+	cvTagAPDBRecoverPayloadV2         = "CV_V2_APDB_RECOVER_PAYLOAD"
+	cvTagAggregateRecoverGetV2        = "CV_V2_AGG_RECOVER_GET"
+	cvTagAggregateRecoverStoreV2      = "CV_V2_AGG_RECOVER_STORE"
+	cvTagCoinShareV2                  = "CV_V2_COIN_SHARE"
+	cvTagPoolOfferV2                  = "CV_V2_POOL_OFFER"
+	cvTagPoolCertShareV2              = "CV_V2_POOL_CERT_SHARE"
+	cvTagPoolCertV2                   = "CV_V2_POOL_CERT"
+	cvTagValidationRequestV2          = "CV_V2_VALIDATION_REQUEST"
+	cvTagValidationSignatureV2        = "CV_V2_VALIDATION_SIGNATURE"
+	cvTagValidationResultV2           = "CV_V2_VALIDATION_RESULT"
+	cvTagDecisionShareV2              = "CV_V2_DECISION_SHARE"
+	cvTagAggregateShareV2             = "CV_V2_AGGREGATE_SHARE"
+	cvTagLaneOfferV2                  = "CV_V2_LANE_OFFER"
+	cvTagLaneACKV2                    = "CV_V2_LANE_ACK"
+	cvTagComponentRefV2               = "CV_V2_COMPONENT_REF"
+	cvTagCertifiedCandidateV2         = "CV_V2_CERTIFIED_CANDIDATE"
+	cvTagCertifiedCandidateACKV2      = "CV_V2_CERTIFIED_CANDIDATE_ACK"
+	cvTagCertifiedCandidateAnnounceV2 = "CV_V2_CERTIFIED_CANDIDATE_ANNOUNCE"
+	cvTagCertifiedCandidateFetchV2    = "CV_V2_CERTIFIED_CANDIDATE_FETCH"
+	cvTagCertifiedCandidateResponseV2 = "CV_V2_CERTIFIED_CANDIDATE_RESPONSE"
 )
 
 func cvAllowedNetworkTag(tag string) bool {
@@ -76,6 +81,8 @@ func cvAllowedNetworkTag(tag string) bool {
 		cvTagHandoffV2,
 		cvTagAPDBStoreV2,
 		cvTagAPDBStoredShareV2,
+		cvTagAggregateAPDBStoreV2,
+		cvTagAggregateARCShareV2,
 		cvTagAPDBRecoverGetV2,
 		cvTagAPDBRecoverStoreV2,
 		cvTagAPDBRecoverPayloadV2,
@@ -92,7 +99,8 @@ func cvAllowedNetworkTag(tag string) bool {
 		cvTagAggregateShareV2:
 		return true
 	case cvTagLaneOfferV2, cvTagLaneACKV2, cvTagComponentRefV2, cvTagCertifiedCandidateV2,
-		cvTagCertifiedCandidateACKV2:
+		cvTagCertifiedCandidateACKV2, cvTagCertifiedCandidateAnnounceV2,
+		cvTagCertifiedCandidateFetchV2, cvTagCertifiedCandidateResponseV2:
 		return true
 	default:
 		return false

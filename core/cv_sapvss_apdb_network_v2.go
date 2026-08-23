@@ -2411,6 +2411,12 @@ func (s *cvAPDBNetworkServiceV2) dispatch(msg Message) {
 		if err == nil {
 			s.markCertifiedCandidateACKV2(digest, msg.From)
 		}
+	case cvTagCertifiedCandidateAnnounceV2:
+		s.handleCertifiedCandidateAnnounceV2(msg)
+	case cvTagCertifiedCandidateFetchV2:
+		s.handleCertifiedCandidateFetchV2(msg)
+	case cvTagCertifiedCandidateResponseV2:
+		s.handleCertifiedCandidateResponseV2(msg)
 	}
 }
 

@@ -3171,3 +3171,14 @@ VCert 和 ARC；直接把 candidate fanout 限制为 validator sample 会让其�
 catalog 可以按 `pool digest` 缓存并按需拉取缺失 component refs，但必须保留 pool digest 和
 certificate 的绑定验证。当前只做缓存不会减少线上的首次 payload，收益低于 relay/tree 和 ACK
 优先级优化，暂不作为默认改动。
+
+### Pull 原型回归（本地 n=4，2026-08-23）
+
+新增 `RLADKR_CANDIDATE_FANOUT_MODE=pull` 原型：源节点向 roster 发送带 origin/digest 的轻量
+announce，接收节点通过 priority queue 发送 digest fetch，源节点返回带 digest 绑定的完整
+candidate response；接收端再次校验 response digest 后才进入现有 candidate verification queue。
+
+n=4 smoke 回归为 `4/4` 结果、无错误、单一 consensus hash，说明 pull 的基本活性和认证绑定
+成立。当前 pull 是全 roster announce + 按需 fetch，还不是 validator-sample-only；n=32 以上仍
+需要在 pull 成功后再逐步限制 fetch 目标集合，并补充 source failure/fallback 测试。candidate
+relay 统计已包含 announce/fetch/response 三类 tag，避免 pull 模式下漏算完整 response。

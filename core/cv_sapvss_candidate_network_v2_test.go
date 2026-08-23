@@ -262,6 +262,37 @@ func TestCVCertifiedCandidateACKV2Codec(t *testing.T) {
 	}
 }
 
+func TestCVCertifiedCandidatePullCodecs(t *testing.T) {
+	digest := string(hashBytes([]byte("candidate-pull-test")))
+	announce, err := cvEncodeCertifiedCandidateAnnounceV2(7, digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if origin, got, err := cvDecodeCertifiedCandidateAnnounceV2(announce); err != nil || origin != 7 || got != digest {
+		t.Fatalf("announce origin=%d digest=%x err=%v", origin, []byte(got), err)
+	}
+	request, err := cvEncodeCertifiedCandidateDigestRequestV2(digest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := cvDecodeCertifiedCandidateDigestRequestV2(request); err != nil || got != digest {
+		t.Fatalf("request digest=%x err=%v", []byte(got), err)
+	}
+	candidate := []byte("candidate-wire")
+	response, err := cvEncodeCertifiedCandidateResponseV2(cvCertifiedCandidateDigestV2(candidate), candidate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotDigest, gotCandidate, err := cvDecodeCertifiedCandidateResponseV2(response)
+	if err != nil || gotDigest != cvCertifiedCandidateDigestV2(candidate) || !bytes.Equal(gotCandidate, candidate) {
+		t.Fatalf("response digest=%x candidate=%q err=%v", []byte(gotDigest), gotCandidate, err)
+	}
+	response[len(response)-1] ^= 1
+	if _, _, err := cvDecodeCertifiedCandidateResponseV2(response); err == nil {
+		t.Fatal("mutated candidate response accepted")
+	}
+}
+
 func cvCandidateRelaySentForTest(transport *cvRouterTestTransport, from, excluded int) bool {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()

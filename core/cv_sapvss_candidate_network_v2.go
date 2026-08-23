@@ -24,14 +24,103 @@ const (
 	cvCandidateFanoutFloodV2      = "flood"
 	cvCandidateFanoutDirectOnlyV2 = "direct-only"
 	cvCandidateFanoutTreeV2       = "tree"
+	cvCandidateFanoutPullV2       = "pull"
 )
 
 func cvCandidateFanoutModeV2() string {
 	mode := strings.ToLower(strings.TrimSpace(os.Getenv("RLADKR_CANDIDATE_FANOUT_MODE")))
-	if mode == cvCandidateFanoutDirectOnlyV2 || mode == cvCandidateFanoutTreeV2 {
+	if mode == cvCandidateFanoutDirectOnlyV2 || mode == cvCandidateFanoutTreeV2 || mode == cvCandidateFanoutPullV2 {
 		return mode
 	}
 	return cvCandidateFanoutFloodV2
+}
+
+const (
+	cvCertifiedCandidateAnnounceDomainV2 = "ARL-CV-sAPVSS/v2/candidate-announce"
+	cvCertifiedCandidateFetchDomainV2    = "ARL-CV-sAPVSS/v2/candidate-fetch"
+	cvCertifiedCandidateResponseDomainV2 = "ARL-CV-sAPVSS/v2/candidate-response"
+)
+
+func cvEncodeCertifiedCandidateAnnounceV2(origin int, digest string) ([]byte, error) {
+	if origin < 0 || len(digest) != 32 {
+		return nil, fmt.Errorf("invalid candidate announce")
+	}
+	var wire bytes.Buffer
+	_ = cvWriteBytes(&wire, []byte(cvCertifiedCandidateAnnounceDomainV2))
+	cvWriteUint64(&wire, uint64(origin))
+	_ = cvWriteBytes(&wire, []byte(digest))
+	return wire.Bytes(), nil
+}
+
+func cvDecodeCertifiedCandidateAnnounceV2(wire []byte) (int, string, error) {
+	r := newCVWireReader(wire)
+	domain, err := r.bytes(len(cvCertifiedCandidateAnnounceDomainV2))
+	if err != nil || !bytes.Equal(domain, []byte(cvCertifiedCandidateAnnounceDomainV2)) {
+		return 0, "", fmt.Errorf("invalid candidate announce domain")
+	}
+	origin, err := r.uint64()
+	if err != nil || origin > uint64(^uint(0)>>1) {
+		return 0, "", fmt.Errorf("invalid candidate announce origin")
+	}
+	digest, err := r.bytes(32)
+	if err != nil || len(digest) != 32 || r.reader.Len() != 0 {
+		return 0, "", fmt.Errorf("invalid candidate announce digest")
+	}
+	return int(origin), string(digest), nil
+}
+
+func cvEncodeCertifiedCandidateDigestRequestV2(digest string) ([]byte, error) {
+	if len(digest) != 32 {
+		return nil, fmt.Errorf("invalid candidate fetch digest")
+	}
+	var wire bytes.Buffer
+	_ = cvWriteBytes(&wire, []byte(cvCertifiedCandidateFetchDomainV2))
+	_ = cvWriteBytes(&wire, []byte(digest))
+	return wire.Bytes(), nil
+}
+
+func cvDecodeCertifiedCandidateDigestRequestV2(wire []byte) (string, error) {
+	r := newCVWireReader(wire)
+	domain, err := r.bytes(len(cvCertifiedCandidateFetchDomainV2))
+	if err != nil || !bytes.Equal(domain, []byte(cvCertifiedCandidateFetchDomainV2)) {
+		return "", fmt.Errorf("invalid candidate fetch domain")
+	}
+	digest, err := r.bytes(32)
+	if err != nil || len(digest) != 32 || r.reader.Len() != 0 {
+		return "", fmt.Errorf("invalid candidate fetch digest")
+	}
+	return string(digest), nil
+}
+
+func cvEncodeCertifiedCandidateResponseV2(digest string, candidate []byte) ([]byte, error) {
+	if len(digest) != 32 || len(candidate) == 0 {
+		return nil, fmt.Errorf("invalid candidate response")
+	}
+	var wire bytes.Buffer
+	_ = cvWriteBytes(&wire, []byte(cvCertifiedCandidateResponseDomainV2))
+	_ = cvWriteBytes(&wire, []byte(digest))
+	_ = cvWriteBytes(&wire, candidate)
+	return wire.Bytes(), nil
+}
+
+func cvDecodeCertifiedCandidateResponseV2(wire []byte) (string, []byte, error) {
+	r := newCVWireReader(wire)
+	domain, err := r.bytes(len(cvCertifiedCandidateResponseDomainV2))
+	if err != nil || !bytes.Equal(domain, []byte(cvCertifiedCandidateResponseDomainV2)) {
+		return "", nil, fmt.Errorf("invalid candidate response domain")
+	}
+	digest, err := r.bytes(32)
+	if err != nil || len(digest) != 32 {
+		return "", nil, fmt.Errorf("invalid candidate response digest")
+	}
+	candidate, err := r.bytes(cvMaxAgreementObjectV2Bytes)
+	if err != nil || len(candidate) == 0 || r.reader.Len() != 0 {
+		return "", nil, fmt.Errorf("invalid candidate response payload")
+	}
+	if cvCertifiedCandidateDigestV2(candidate) != string(digest) {
+		return "", nil, fmt.Errorf("candidate response digest mismatch")
+	}
+	return string(digest), candidate, nil
 }
 
 func cvCandidateFanoutParallelV2(peers int) int {
@@ -265,7 +354,20 @@ func (s *cvAPDBNetworkServiceV2) fanoutCandidateV2(
 	if s == nil || ctx == nil || len(digest) != 32 || len(wire) == 0 {
 		return fmt.Errorf("invalid CV V2 candidate fanout")
 	}
-	peers := cvCandidateFanoutPeersV2(s.cfg.OldRoster, s.cfg.LocalNode, excluded, origin, cvCandidateFanoutModeV2())
+	mode := cvCandidateFanoutModeV2()
+	if mode == cvCandidateFanoutPullV2 {
+		announce, err := cvEncodeCertifiedCandidateAnnounceV2(origin, digest)
+		if err != nil {
+			return err
+		}
+		for _, peer := range cvCandidateFanoutPeersV2(s.cfg.OldRoster, s.cfg.LocalNode, excluded, origin, cvCandidateFanoutDirectOnlyV2) {
+			if err := s.send(peer, cvTagCertifiedCandidateAnnounceV2, announce); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	peers := cvCandidateFanoutPeersV2(s.cfg.OldRoster, s.cfg.LocalNode, excluded, origin, mode)
 	if len(peers) == 0 {
 		return nil
 	}
@@ -509,6 +611,44 @@ func (s *cvAPDBNetworkServiceV2) acknowledgeCertifiedCandidateV2(msg Message) st
 	return digest
 }
 
+func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateAnnounceV2(msg Message) {
+	origin, digest, err := cvDecodeCertifiedCandidateAnnounceV2(msg.Body)
+	if err != nil || origin != msg.From || len(s.cachedCertifiedCandidateWireV2(digest)) != 0 {
+		return
+	}
+	request, err := cvEncodeCertifiedCandidateDigestRequestV2(digest)
+	if err == nil {
+		_ = s.sendPriorityAsync(msg.From, cvTagCertifiedCandidateFetchV2, request, nil)
+	}
+}
+
+func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateFetchV2(msg Message) {
+	digest, err := cvDecodeCertifiedCandidateDigestRequestV2(msg.Body)
+	if err != nil {
+		return
+	}
+	candidate := s.cachedCertifiedCandidateWireV2(digest)
+	if len(candidate) == 0 {
+		return
+	}
+	response, err := cvEncodeCertifiedCandidateResponseV2(digest, candidate)
+	if err == nil {
+		_ = s.sendAsync(msg.From, cvTagCertifiedCandidateResponseV2, response, nil)
+	}
+}
+
+func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateResponseV2(msg Message) {
+	digest, candidate, err := cvDecodeCertifiedCandidateResponseV2(msg.Body)
+	if err != nil {
+		return
+	}
+	if cvCertifiedCandidateDigestV2(candidate) != digest {
+		return
+	}
+	s.enqueueCertifiedCandidateV2(Message{From: msg.From, To: msg.To, Tag: cvTagCertifiedCandidateV2,
+		Body: candidate, WireBytes: msg.WireBytes})
+}
+
 func (s *cvAPDBNetworkServiceV2) enqueueCertifiedCandidateV2(msg Message) {
 	digest := s.acknowledgeCertifiedCandidateV2(msg)
 	s.mu.Lock()
@@ -552,7 +692,8 @@ func (s *cvAPDBNetworkServiceV2) processCertifiedCandidateV2(msg Message) {
 	if len(relayWire) == 0 {
 		relayWire = append([]byte(nil), msg.Body...)
 	}
-	if cvCandidateFanoutModeV2() != cvCandidateFanoutDirectOnlyV2 {
+	mode := cvCandidateFanoutModeV2()
+	if mode != cvCandidateFanoutDirectOnlyV2 && mode != cvCandidateFanoutPullV2 {
 		go func(origin int) {
 			_ = s.fanoutCandidateV2(s.ctx, digest, relayWire, msg.From, origin)
 		}(object.Header.ProposerID)

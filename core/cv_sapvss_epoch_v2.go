@@ -344,7 +344,7 @@ func cvAddCostBreakdownV2(sent, recv map[string]uint64, services ...cvServiceExp
 		"arc_share":          {cvTagAggregateARCShareV2},
 		"pool_coin":          {cvTagCoinShareV2, cvTagPoolOfferV2, cvTagPoolCertShareV2, cvTagPoolCertV2},
 		"validation_request": {cvTagValidationRequestV2, cvTagValidationSignatureV2, cvTagValidationResultV2},
-		"candidate_relay":    {cvTagCertifiedCandidateV2, cvTagCertifiedCandidateACKV2},
+		"candidate_relay":    {cvTagCertifiedCandidateV2, cvTagCertifiedCandidateACKV2, cvTagCertifiedCandidateAnnounceV2, cvTagCertifiedCandidateFetchV2, cvTagCertifiedCandidateResponseV2},
 		"decision_handoff":   {cvTagDecisionShareV2, cvTagHandoffV2},
 		"new_share_exchange": {cvTagAggregateShareV2},
 	}

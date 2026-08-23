@@ -13,12 +13,12 @@ AWS access key、SSO token、SSH private key、节点 secret share 或 setup bun
 | Region | `us-east-1` |
 | AZ | `us-east-1f` (`use1-az5`) |
 | 实例类型 | `c7g.xlarge` Spot，4 vCPU、8 GiB、ARM64 |
-| 最近 ExperimentGroup | `p10-use1-dxtreadyfix-20260818`（success，已销毁） |
+| 最近 ExperimentGroup | `paper-private-n64-current-20260823-a1`（首次 n=64，双协议均未完成，invalidated，已销毁） |
 | 固定实验 AMI | `ami-0da946b587756eba5` (v6, commit `98bce4f`) |
 | 当前基线 AMI snapshot | `snap-006de34947715f68d`（v6；v5 `snap-03ef25b557c1a77a2` 保留为历史基线） |
-| 保留自有 AMI / snapshot | `4 / 4` |
+| 保留自有 AMI / snapshot | `1 / 1`（仅保留最新 v6 AMI 与其 30 GiB snapshot） |
 | Terraform instance count | `0` |
-| 当前运行实例 | `0`（最新两批 n=10 fleet 均已终止） |
+| 当前运行实例 | `0`（debug fleet 已于 2026-08-22 16:23Z 销毁） |
 | 当前挂载 EBS | `0` |
 | 当前临时 S3 | `0` |
 
@@ -55,6 +55,14 @@ AWS access key、SSO token、SSH private key、节点 secret share 或 setup bun
 | 2026-08-18 08:40-08:57 | 同 fleet 交替验证 | ARL 成功后 Practical 默认 10/10 timeout；整轮 invalidated，Terraform 销毁全部 29 个资源 |
 | 2026-08-18 10:03-10:07 | cleanup barrier 首轮 AWS 验证 | barrier 的 path `pkill` 自匹配当前 shell，0/10 cleanup-ready；整轮 invalidated，29 个资源已销毁 |
 | 2026-08-18 10:10-10:16 | cleanup barrier 修复后验证 | cleanup-ready 10/10、runner ready 10/10；Practical 0/7 quorum，整轮 invalidated，29 个资源已销毁 |
+| 2026-08-22 09:00-09:14 | n=10 当前 checkout 私网共享 fleet | ARLADKR 与 PracticalADKR 均 10/10 完成；SSM inline summary 被截断，性能结果不可验证；20 个 Terraform 资源已销毁 |
+| 2026-08-22 09:39-09:46 | n=10 当前 checkout ARL-only 私网复测 | ARLADKR 10/10 完成、quorum 10/7；schema v3 压缩 summary 仍超过 SSM inline 上限，结果不可验证；20 个 Terraform 资源已销毁 |
+| 2026-08-22 09:54-10:01 | n=10 当前 checkout ARL-only 私网复测 r2 | ARLADKR `success=9/10`、quorum 9/7；1 节点失败；schema v4 summary 仍 missing bench；20 个 Terraform 资源已销毁 |
+| 2026-08-22 16:23 | 销毁保留的 debug fleet | 发现仅 7/10 台存活（3 台于约 11:32-11:52Z 被 Spot 容量回收）；Terraform 销毁 17 个资源；复核实例/VPC 均为 0 |
+| 2026-08-22 16:33-17:13 | n=10 私网双协议 `paper-private-n10-current-20260822-ad` | ARL 9/10、Practical 10/10 均 quorum 成功且 schema v4 收集验证通过；本地 SSO token 过期造成一次中断后用短期静态凭证在同一 fleet 续跑完成；20 个 Terraform 资源已销毁 |
+| 2026-08-22 17:46-18:15 | n=10 私网双协议 `paper-private-n10-current-20260822-ae`（耗时度量轮） | ARL 10/10、Practical 8/10 quorum 成功；全程零人工干预 29m34s；行缓冲与凭证预检生效；20 个 Terraform 资源已销毁 |
+| 2026-08-23 02:23-02:31 | n=10 私网双协议 `paper-private-n10-current-20260823-af`（wait 加速验证轮） | ARL 10/10、Practical 10/10 quorum 成功；全程 7m50s（上轮 29m34s）；ARL wait 3s 检测 10/10、Practical wait 63s 无返回停滞；20 个 Terraform 资源已销毁 |
+| 2026-08-23 02:36-04:20 | n=64 私网双协议 `paper-private-n64-current-20260823-a1`（首次 n=64） | **整轮 invalidated**：ARL n=64 活性停滞（0 成功、节点空闲等待）；Practical runner ready quorum 0/43（未定位）；修复 quorum 等待 >50 上限；74 个 Terraform 资源已销毁 |
 
 ## 镜像内容与验证
 
@@ -135,15 +143,32 @@ snapshot。AMI 不属于当前 Terraform 栈的销毁范围。
 | 2026-08-21 ARL n=32 `paper-n32-arl-fix-r2-20260821`，29/32 quorum smoke | 约 `$0.55` | **约 `$5.14`** |
 | 2026-08-21 Practical n=32 `paper-n32-practical-fix-r1-20260821`，协议阈值诊断轮 | 约 `$0.36` | **约 `$5.50`** |
 | 2026-08-21 ARL/Practical 修复后 ARM64 v4 AMI bake，源实例约 0.161 instance-hours | 约 `$0.05` | **约 `$5.55`** |
+| 2026-08-21 后续已逐节记录的 shared/v5/v6/n=10/n=32 轮次 | 约 `$3.98` | **约 `$9.53`** |
+| 2026-08-22 n=10 当前 checkout 共享私网轮次，约 2.28 instance-hours | 约 `$0.14` | **约 `$9.67`** |
+| 2026-08-22 保留 debug fleet 至 16:23Z 销毁的追加运行（7 台 x 约 2.47 h，另 3 台早前被 Spot 回收） | 约 `$1.05` | **约 `$18.09` 前值 + `$1.05` = 约 `$19.14`** |
+| 2026-08-22 n=10 私网双协议 `paper-private-n10-current-20260822-ad`，6.121 instance-hours | 约 `$0.37` | **约 `$19.51`** |
+| 2026-08-22 n=10 私网双协议 `paper-private-n10-current-20260822-ae`，4.477 instance-hours | 约 `$0.27` | **约 `$19.78`** |
+| 2026-08-23 n=10 私网双协议 `paper-private-n10-current-20260823-af`，1.046 instance-hours | 约 `$0.06` | **约 `$19.84`** |
+| 2026-08-23 n=64 私网双协议 `paper-private-n64-current-20260823-a1`（invalidated），110.35 instance-hours | 约 `$6.75` | **约 `$26.59`** |
 
-持续成本另计：4 个 AMI snapshot 的逻辑块约 21.34 GiB，按 `$0.05/GiB-month` 粗算上界约
-`$1.07/月`，增量共享后实际可能更低。当前运行实例、公网 IPv4、实验 gp3、临时 S3、实验 VPC
-均为 0，因此当前 fleet 小时成本为 `$0/小时`。
+以上累计是逐轮资源时长估算，不是 AWS 账单；表中 `$9.67` 之后的轮次（n=32 公私网、debug fleet
+追加运行与两次 n=10 双协议轮）在正文各节逐笔累加，当前实验账本口径约 **`$26.59`**。2026-08-22T17:20Z
+查询 Cost Explorer 得到 `2026-08-17--2026-08-22` 已归集 Net/Unblended Cost **`$13.5558`**，其中
+`2026-08-22` 当日仅 `$0.0054`，明显尚未入账——8 月 22 日全天的 n=32 公私网轮次、debug fleet
+追加运行（约 `$1.05`）与三次 n=10 双协议轮（约 `$0.70`）及 n=64 invalidated 轮（约 `$6.75`）都不在其中。因此当前应采用两种口径：
+实验账本估算约 **`$26.59`**；账号已归集账单 **`$13.56`**（待 8 月 22 日入账后差距收窄）。差额
+来自账本早期明确排除的未量化轮次、持续存储/公网 IPv4/KMS 等费用，也可能包含账号内未按
+ExperimentGroup 分摊的资源；在 Cost Explorer 当日结算前不能把估算写成最终账单。
+
+持续成本另计：清理后仅保留 1 个 30 GiB snapshot。按 `$0.05/GiB-month` 粗略上界约
+**`$1.50/月`**；EBS snapshot 实际按已用增量块计费，真实值通常低于该上界。当前运行实例、公网
+IPv4、实验 gp3、临时 S3、实验 VPC 均为 0，因此当前 fleet 小时成本为 `$0/小时`；仅该最新
+AMI/snapshot 继续产生存储费。
 
 VPC、subnet、route table、security group、IAM role 和 instance profile 当前保留。此前一批 n=10 Spot
 集群中有 2 台被 AWS 回收，该轮不计入论文数据；最终用于三组成功实验的 10 台实例已由 Terraform
-全部销毁。当前没有运行实例、实验 EBS、EIP、NAT Gateway 或临时 S3 桶；账号保留的 4 个自有 AMI
-及其 snapshot 是唯一持续产生存储费的实验资源。最终账单仍以 AWS Cost Explorer 为准。
+全部销毁。当前没有运行实例、实验 EBS、EIP、NAT Gateway 或临时 S3 桶；账号仅保留 1 个自有 AMI
+及其 1 个 snapshot。最终账单仍以 AWS Cost Explorer 为准。
 
 ## 每轮实验清理清单
 
@@ -155,7 +180,9 @@ VPC、subnet、route table、security group、IAM role 和 instance profile 当�
 3. 执行 `terraform apply -var instance_count=0 -var ami_id=...`。
 4. 用 `describe-instances`、`describe-volumes`、`describe-addresses` 和 `describe-nat-gateways`
    按 `ExperimentGroup` 检查没有运行实例、EBS、EIP 或 NAT Gateway。
-5. 删除本轮临时 S3 object/bucket、SSM 临时 artifact 和本地临时 setup 目录。
+5. 删除本轮临时 S3 object/bucket、SSM 临时 artifact 和本地临时 setup 目录。复用的
+   `arladkr-ssm-<account>` 分发桶在轮末必须显式清空（`aws s3 rm --recursive` 后视情况删除桶），
+   不能依赖单轮命令内的自动删除路径——2026-08-22 曾残留三轮共 211 个 setup 分片。
 6. 只有确认后续不再使用时，才注销 AMI 并删除对应 snapshot：
 
 ```bash
@@ -2127,3 +2154,1020 @@ inventory 也成功写出；但 setup 前 Fabric 重新按 `NodeSlot` 查询 AWS
 下次 n=32 重试应在 apply 后增加一次稳定性窗口，连续两次查询都必须得到完整 `NodeSlot=0..31`
 且实例状态为 running/SSM Online；若仍使用 Spot，建议设置更高的 max price 或改用短时 On-Demand
 验证，以区分 Spot 回收与控制面最终一致性。
+
+## 2026-08-22 n=10 当前 checkout 私网共享验证与 summary schema v3
+
+实验组 `paper-private-n10-current-20260822-ac` 在 `us-east-1f/use1-az5` 使用 10 台
+`c7g.xlarge` Spot、v6 AMI `ami-0da946b587756eba5` 和固定私网
+`10.42.1.10--10.42.1.19`。AMI 未重建；`stage_current_binaries=true` 将当前 checkout 的 ARM64
+二进制安装到所有节点，实际 digest 为：
+
+- archive：`5e2c45853b39d01a54231f34892577bb5cef66f3fe39d91a49acef9a3bb14e03`；
+- `rladkrbench`：`9390b708ff7a2c0847fc3d3a3f11a79bcebac3f25adf5f784083dd48a703ba6d`；
+- `bench_latency`：`8542e695481cc12ce41970db45bfe9325ea18290e8dc81ab3a68f5917e370e31`。
+
+ARLADKR `run-20260822-090513` 与 PracticalADKR `run-20260822-091213` 都通过 10/10 launch、
+10/10 ready，并在首次状态轮询时达到 `success=10/7`。两次 setup digest 分别为
+`2c5588b3786d6a9b72eefcdffbc07726e2d1f6ec41f9d3f05b403d2d5e9e7102` 和
+`53b6a00241bd628d631ef9c00abe2c1027340d7640f0096b3beab421d516d954`。但两个 summary 的 10 个
+节点全部记录 `compact summary unavailable: missing bench,status`，因此本轮只能证明协议进程完成，
+不能提供可信 latency、通信量或 consensus hash，也不能作为论文性能样本。历史 record 写成
+`status=success` 是控制面语义缺陷；按当前验证标准应解释为 **协议完成但结果不可验证**。
+
+根因不是文件落盘慢。compact SSM command 先输出 schema/path marker，再直接输出持续增长的整条
+`E2E_BENCH_RESULT`，而 `_ssm_run_command_many` 从 SSM `ListCommandInvocations` 的 inline output
+读取结果。新增 profiling 字段使结果行超过 SSM inline 上限，stdout 在 bench 行中部被截断，导致
+解析器看不到 `RLADKR_COMPACT_BENCH_END` 与后续 status marker。所谓 60 秒 precise retry 仍执行
+同一输出格式，所以必然再次截断；此前将其归因于 shutdown/落盘 race 不完整。
+
+修复后的 compact schema v3 在节点端对单条 bench result 执行 gzip+base64，再放入有界 stdout，
+控制端严格 base64/gzip 解码后写回原始 `bench.txt`。同时完成以下一致性收口：
+
+- 空 status 现在视为缺失，不再仅检查 bench；
+- 成功节点缺少 consensus hash 时 `quorum_success=false`，避免空字符串被当作唯一共识；
+- `aws_collect` 同时要求 setup digest、timing metadata 和 quorum consensus 验证通过；
+- 私网与跨 Region shared suite 仍会尝试运行第二个协议，但任一项目 summary 不可验证时最终状态不再
+  写成 `success`；错误延迟到两个协议都尝试完后统一返回并进入 Terraform finally 清理；
+- 成功重试会删除该节点旧的 `collection_error.txt`，避免复用输出目录时残留假错误。
+
+针对性 Fabric 回归共 7 项通过，包含约 95 KiB 的模拟结果行压缩/还原、缺 consensus hash、缺节点
+重试、私网 shared suite 和跨 Region shared suite。没有为了验证收集器再次启动 AWS fleet。
+
+资源与成本：10 台实例从约 `09:00:47--52Z` 运行至 `09:14:28--29Z`，合计约 2.28
+instance-hours；当时 Spot 价 `$0.0523/h`，计算约 `$0.119`，再计公网 IPv4、短时 gp3 与 SSM/S3，
+本轮保守记 **约 `$0.14`**，实验逐轮累计由 `$9.53` 更新为 **约 `$9.67`**。Terraform destroy
+报告 20/20 资源销毁，复核 10 台实例均 `terminated`，实验组无 volume 或 snapshot 残留。
+
+### 仍存在的问题
+
+1. schema v3 已通过本地真实 gzip/base64 工具链和 mocked SSM 输出测试，但尚未用新 fleet 做端到端
+   AWS 验证；下一次本来就需要的协议实验应顺带验证，不应单独为 collector 再开 10 台实例。
+2. 当前 `E2E_BENCH_RESULT` 是空格分隔的无转义 `key=value`；只要字段值保持无空格即可解析，但它不是
+   稳健的结构化格式。后续应考虑在 artifact 中增加 JSON 结果，同时保留文本行兼容旧分析脚本。
+3. `aws_wait` 的 10/10 success 只证明远端 status marker 成功，不等价于结果证据已收集；文档和
+   experiment record 的正式成功必须以 `summary.quorum_success=true` 为准。
+4. Cost Explorer 无法按现有 `ExperimentGroup` 直接追溯全部历史成本，因为成本分配标签未确认激活，
+   逐轮估算与账号账单存在约 `$3.86` 差额。后续应启用 cost allocation tag，或至少为每轮记录
+   aggregate instance-hours、IPv4-hours、gp3 GB-hours 和 Region 单价。
+5. 历史 AMI/snapshot 已按授权清理，目前只保留最新 v6 AMI 与 snapshot；历史实验若需复现，必须
+   依赖本地 tracking 文档中的二进制/source digest，不能再依赖已删除的旧镜像。
+
+## 2026-08-22 AMI/snapshot 清理与 ARL-only 复测
+
+按“只保留最新镜像”的授权，已在 `us-east-1`、`eu-west-1`、`ap-southeast-2` 核验无
+`pending/running/stopping/stopped` 实例后执行清理。注销旧 AMI 9 个（含跨 Region v2 副本），
+删除其关联 snapshot 及旧 orphan snapshot；当前仅保留：
+
+- `ami-0da946b587756eba5`，`arladkr-bench-arm64-v6-pipeline-98bce4f-20260821`；
+- `snap-006de34947715f68d`，30 GiB。
+
+随后只启动 ARLADKR，不运行 PracticalADKR。实验组为
+`paper-private-n10-arl-only-20260822`，run ID `run-20260822-094427`，使用 10 台
+`c7g.xlarge` Spot、`us-east-1f/use1-az5`、私网 `10.42.1.10--10.42.1.19`。10/10 SSM、
+cleanup-ready、launch、ready 均成功，协议状态 `success=10/7`；当前 checkout staging 成功，
+`rladkrbench` digest 为 `924019ec58956ba945590a87df789da410c884cc8d9dc4dd478e49e930af5c41`。
+
+但 ARL summary 10/10 节点仍为 `compact summary unavailable: missing bench,status`，实验最终按
+修复后的控制面标记 `status=failed`，错误为 `collected summary failed validation: setup bundle,
+timing metadata, quorum consensus`。这次复测证明：schema v3 的整行 gzip/base64 仍可能超过 SSM
+inline output 上限，不能把压缩视为充分保证；协议本身和私网网络没有显示故障。20/20 Terraform
+资源已销毁，`final_cleanup=cleanup-ready`，当前无运行实例、实验 EBS 或 VPC 残留。
+
+已补 schema v4：节点端只通过 inline summary 返回论文需要的字段白名单（latency、阶段时间、通信量、
+setup digest、consensus hash 等），去掉大体量 profiling 明细；完整 result 行必须改走受控 S3/分块
+artifact 路径。该修复尚未再次消耗 AWS fleet，需在下一次正常 ARL 实验中端到端确认。此次 ARL-only
+复测约 10 台实例运行 7 分钟，保守新增约 `$0.08`；AMI/snapshot 清理本身不产生实验运行费，但从
+后续账单中移除了旧 snapshot 持续存储成本。
+## 2026-08-22 保留 fleet 的 ARL summary 调试
+
+应用户要求重新启动并保留实例，实验组为 `paper-private-n10-arl-debug-20260822`，没有运行
+PracticalADKR，也没有自动 destroy。10 台 `c7g.xlarge` Spot 在 `10:08:35--39Z` 启动，私网
+`10.42.1.10--10.42.1.19`，run ID `run-20260822-101401`。10/10 cleanup-ready、launch、ready，
+状态 `success=10/7`。
+
+通过 SSM 进入实例直接检查后确认：每个节点的 bench 文件存在且约 6.8 KiB，result 行约 6.8 KiB，
+gzip+base64 后仅约 2.9 KiB，远低于 SSM inline 上限；runner stderr 为空。真正原因是 schema v4
+远端 `awk` 白名单命令语法错误，SSM stderr 没有被 compact collector 保留，最终被错误表现为
+`missing bench`。随后改为 POSIX shell `case` 白名单，并修复遗漏 `E2E_BENCH_RESULT` 前缀的问题。
+
+不重新运行协议，直接用 SSM 重新收集到
+`deployment/aws-state/paper-private-n10-arl-debug-20260822/artifacts-v5`，结果验证成功：
+
+- successful hosts：`10/10`，quorum：`7`；
+- setup digest：`213eaf11f4d715e408b7659855ec14e9e6177b1f22ba6c553e0cfee49a04bf55`；
+- consensus hash：`712c35cdaf5e676e315a75fd6d255a1413f3679d65ff162a79df4de91b16a19d`；
+- 节点 10 latency：`1855.70 ms`，online `1736.85 ms`，sent `3889302 B`，recv `1535118 B`；
+- summary flags：setup digest 一致、timing metadata 一致、`quorum_success=true`。
+
+因此当前已经证明：私网 ARL 协议和 summary 数据本身均正常，之前连续失败完全是 collector 命令生成器
+问题，而不是 AWS 网络或 result 文件落盘问题。轮询优化保留：SSM 单实例查询 1 秒、状态轮询默认
+2 秒；本轮状态在 8 秒完成 quorum。
+
+资源当前**刻意保留**，不要执行 destroy：截至 `2026-08-22T10:21:54Z`，10 台仍为 `running`。
+按已知 Spot `$0.0523/h`，从启动至该时刻约 2.22 instance-hours，计算成本约 `$0.116`；加公网
+IPv4、gp3、SSM/S3 后本轮暂估约 **`$0.14`**，且每小时仍继续增加约 `$0.52` 的 Spot 计算费加
+附加费。Cost Explorer 当前已归集 `2026-08-17--2026-08-21` **`$13.5289738994`**，
+`2026-08-22` 仍为 estimated `$0`；因此账号已归集累计仍约 `$13.53`，含本轮当前运行时长的
+暂估约 **`$13.67`**，最终以日结账单为准。
+
+后续销毁记录（2026-08-22T16:23Z）：复查时该 fleet 仅剩 `7/10` 台 running；Spot 请求历史显示
+另外 3 台（`i-01db79bac3f7630ad`、`i-0fdff7a5669a5ad03`、`i-01352aa83db5d93fb`）已于约
+`11:32--11:52Z` 被 AWS 以 `no Spot capacity` 回收，对应 Spot 请求的 StartTime 为空，
+describe-instances 记录已过期不可见。由于缺节点的 fleet 不能复用于新 benchmark，且空转持续计费，
+已用其 Terraform state 执行 destroy，销毁 17 个资源（state 中仍登记 10 台实例，其中 3 台实际早已
+终止）。从上一计费截点（约 `13:55Z`）到销毁，7 台新增约 17.3 instance-hours，追加约 **`$1.05`**；
+上节按 10 台存活计入的 `$2.17` 对这 3 台存在约 `$0.4` 的高估，按保守口径不追溯冲减。
+
+## 2026-08-22 私网 n=32 ARLADKR + PracticalADKR 当前 checkout 复测
+
+使用唯一保留的 `ami-0da946b587756eba5` 作为 ARM64 运行环境，`stage_current_binaries=true`，由当前 checkout 交叉编译并分发二进制。实验组 `paper-private-n32-current-20260822` 使用 `us-east-1/us-east-1f/use1-az5` 的 32 台 `c7g.xlarge` Spot；协议仅允许同安全组私网通信，地址 `10.42.1.10--10.42.1.41`，`f=10`、quorum 阈值 `22`。32/32 slot、SSM、setup、cleanup-ready 和 launch 均成功。
+
+ARLADKR run `run-20260822-103823`：32/32 成功，quorum `32/22`，`quorum_success=true`，共识 hash `d6bd10e7dc06408fe3787bba9a8b9299d2fd72f0761df09f91016b77a452a21b`，setup digest `0aba2acb983391ab724de038e72178cacafe888ece58a65caa18b29ef3b879b3`。平均总延迟约 `11929 ms`，setup `493 ms`，online protocol `11436 ms`，最慢约 `14899.8 ms`，超过 10 秒目标；该超时来自 n=32 在线阶段，不是 SSM 收集等待。
+
+PracticalADKR run `run-20260822-104505`：达到 `27/22` quorum，32/32 launch/status 成功；对 5 个无 bench 输出节点执行 batched precise retry。最终 `summary.quorum_success=true`，但仅 27 个节点有 bench，5 个共识字段为 `none`，应标为“协议 quorum 成功、summary 证据不完整”，不作为完整 32 节点性能样本。可用节点平均总延迟约 `27954 ms`、online `27937 ms`、最大约 `33556.5 ms`，可用 hash 为 `0759606c966dccf52d5c97ae713609436291506add28d9b31bb774656ab2d9f6`。
+
+两个项目完成后执行 cleanup-ready 和 Terraform destroy，记录 `status=success`、`cleanup=destroyed`；32 台实例、VPC、子网、安全组和 IAM 均已销毁，AMI/snapshot 未修改。本轮约 14.4 分钟，按 Spot `$0.0523/h` 及 IPv4/gp3/SSM/S3 附加项保守新增约 **`$0.45`**，累计暂估由 `$13.67` 更新为 **`$14.12`**，Cost Explorer 当日数据可能延迟。schema v4 在 n=32 ARL summary 上端到端验证通过；PracticalADKR 的 5 节点重试仍需继续分析 bench 产出/退出时序。
+
+## 2026-08-22 美爱两区公网 n=32 纯 Spot 双协议复测
+
+启动前核验：`us-east-1` 最新且唯一自有镜像为 `ami-0da946b587756eba5`；`eu-west-1` 已无旧自有 AMI，因此从美国最新镜像复制出 `ami-06bcbb8c1d5efc9b8`，关联 snapshot `snap-0352d7343a05c5125`，状态 `available`、架构 `arm64`。新增配置 `deployment/config.aws-cross-region-n32-use1-euw1.yaml`，固定 `us-east-1a/use1-az1:16` 加 `eu-west-1c/euw1-az1:16`、`n=32,f=10`、公网 `/32` peer allowlist、SSM 管理和 `purchase_option=spot`。三次实际 fleet 均由 EC2 API 复核为每区 `16 spot`，没有 On-Demand 或 fallback；二进制仍从当前 checkout staging。
+
+前两组 fleet 没有产生协议性能结果。`paper-public-use1-euw1-n32-current-20` 在用户要求清理时中止，协议启动前即 `cleanup=destroyed`。`paper-public-use1-euw1-n32-spot-r2-20` 暴露 shared setup S3 缓存错误：node shard 对象 key 只包含逻辑 setup digest，而每次 `tar.gz` 的元数据会改变实际归档 digest；命中旧对象时，新 index digest 与下载对象不一致，导致 32/32 `setup shard digest mismatch`。现已将 shard key 改为同时包含实际 archive digest，并删除本轮对应的陈旧 S3 prefix；针对性测试和 `py_compile` 通过。修复后的 r3 两协议 setup 均在 batch 1 两区 16/16 成功。
+
+有效实验 `paper-public-use1-euw1-n32-spot-r3-20` 使用当前二进制：`rladkrbench` `924019ec58956ba945590a87df789da410c884cc8d9dc4dd478e49e930af5c41`，`bench_latency` `35a09e8c1aaffe45d0a900a651bf5fbee3f024df4a1a4a71e979b2e0dd9a1895`。轮询仍为 SSM 单实例 1 秒、状态默认 2 秒；观察到的较长控制面间隔来自跨 Region SSM command/API 完成时间，不是本地 sleep 恢复成 30 秒。
+
+ARLADKR run `run-20260822-133958`：实际状态 `31/22` 成功、1 失败；quorum-only collector 只取 22 个正常节点（美国 15、爱尔兰 7），`summary.quorum_success=true`，22/22 共识 hash 均为 `5a73ceb21fd8d73eb87dc024ff88ca9f408aaca0ac20fb1261004d9c5763f91a`。22 节点平均总延迟 `294659 ms`，setup `493 ms`，online `294166 ms`，范围 `294096--294902 ms`。通过 SSM 在协议完成后直接进入实例确认 CPU/负载已空闲、bench/status 已落盘；代表性爱尔兰节点的 `aggregate_agreement_ms=285591 ms`，约占 online 的 97%，而 candidate formation `4557 ms`、recover shard `11314 ms`。因此约 295 秒差距是真实的 aggregate agreement/MVBA WAN 放大，不是 SSM setup 或收集时间；控制面只额外增加数十秒的完成识别延迟。
+
+PracticalADKR run `run-20260822-135131`：实际状态 `23/22` 成功、9 失败；collector 取 22 个正常节点（美国 10、爱尔兰 12），`summary.quorum_success=true`，22/22 hash 均为 `555c003ba41e1d4ecec8c1e4cbcba0c9b18c99f1b7520bf136784a96a276518a`。平均总延迟 `43393 ms`，setup `20 ms`，online `43373 ms`，范围 `42811--43862 ms`。该轮达到 quorum，但 9 个失败节点未进入 quorum-only artifact，不能写成 32/32 完整成功样本。
+
+r3 结束后两区各 43 个 Terraform 资源均销毁，复核本实验组无活跃实例；美国源 AMI、爱尔兰最新副本及其 snapshot 保留。三个纯 Spot fleet 分别消耗约 `4.575`、`4.167`、`12.525` instance-hours，共 `21.267 instance-hours`。按当时 `us-east-1a $0.0729/h`、`eu-west-1c $0.0766/h`，EC2 约 `$1.59`；公网 IPv4 约 `$0.11`，加入 gp3、SSM/S3 和少量跨区流量，三组保守计 **约 `$1.80`**。同时，刻意保留的 n=10 debug fleet 从上一计费截点继续运行，新增约 `$2.17`。故累计暂估由 `$14.12` 更新为 **约 `$18.09`**。Cost Explorer 当前归集约 `$13.5558`，其中 8 月 22 日仅 `$0.0054`，明显尚未入账；爱尔兰 30 GiB snapshot 还会产生持续存储费，最终成本以日结账单为准。
+
+## 2026-08-22 私网 n=10 ARLADKR + PracticalADKR 最新 checkout 复测（schema v4 双协议验证）
+
+销毁 debug fleet 后，使用 `fab aws-private-suite`、配置 `deployment/config.aws-private-n10-use1.yaml`
+启动实验组 `paper-private-n10-current-20260822-ad`：`us-east-1f/use1-az5`、10 台 `c7g.xlarge` Spot、
+v6 AMI `ami-0da946b587756eba5`、私网 `10.42.1.10--10.42.1.19`，`n=10,f=3,runs=1,epochs=1`，
+strict-network 与 comm-metrics 均开启。`stage_current_binaries=true` 从当前 checkout（提交
+`8cee734`）交叉编译分发：`rladkrbench` `924019ec58956ba945590a87df789da410c884cc8d9dc4dd478e49e930af5c41`、
+`bench_latency` `35a09e8c1aaffe45d0a900a651bf5fbee3f024df4a1a4a71e979b2e0dd9a1895`，与 8 月 22 日
+公网 r3 轮相同。ARL setup bundle digest 为
+`f451090d912277ee82d6ca06d77f742a859a6380c50323243902d5c263ec6727`；Practical 命中 setup cache，digest
+`53b6a00241bd628d631ef9c00abe2c1027340d7640f0096b3beab421d516d954`。
+
+执行过程中本地 SSO token 于 ARL collect 完成后过期（botocore `TokenRetrievalError`，refresh token
+已失效），suite 的 finally destroy 同步失败，fleet 完整保留。随后从仍有效的 CLI 角色凭证缓存导出
+短期静态凭证（至 `20:52Z` 失效），在**同一 fleet** 上按 suite 原语义续跑 Practical
+setup/cleanup-ready/launch/wait/collect，再完成 Terraform destroy；该临时 profile 与 state 配置中的
+profile 指向已在销毁后恢复并删除，凭证未写入任何文档。协议、参数、计时与通信量口径无任何改变。
+
+| 项目 | run_id | 完成 | mean latency | median | p95 | online/setup | sent/recv（成功节点均值） | 共识 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| ARLADKR | `run-20260822-164120` | `9/10`（quorum `9/7`） | **`1896.01 ms`**（范围 `1733.1--2014.0`） | `1908.18 ms` | `1977.28 ms` | `1777.00 / 118.9 ms` | `3.83 / 3.31 MB` | 单一 hash `d2174413...75711fc` |
+| PracticalADKR | `run-20260822-170102` | `10/10`（quorum `10/7`） | **`4335.03 ms`**（范围 `3754.6--4782.1`） | `4654.50 ms` | `4747.48 ms` | `4327.11 / 7.8 ms` | `1.00 / 1.00 MB` | 单一 hash `b42a54ea...77afe67` |
+
+两个 summary 的 `quorum_success=true`、setup digest 与 timing metadata 一致性检查全部通过；这是
+schema v4 compact 收集路径首次在私网 fleet 上对两协议端到端验证成功，此前连续三轮的 collector
+失败未复现。ARL 节点 `10.42.1.16` bench 结果为全零（无 collection_error/error_summary），按 9/10
+计入；Practical 全部 10 节点成功，延迟呈双峰（4 台约 `3.75--3.78 s`，6 台约 `4.62--4.78 s`）。
+本轮 ARL 平均延迟约为 Practical 的 `44%`（约 2.3 倍优势），通信量约为其 3.8 倍；两协议为单 epoch
+smoke，n=10 仍非论文安全参数点，以上比较不能直接写入论文主表。
+
+实例 `16:35:00Z` 启动、约 `17:11:44Z` 终止，合计 **6.121 instance-hours**：Spot（`$0.0523/h`）约
+`$0.320`、公网 IPv4 约 `$0.031`、gp3 约 `$0.020`，本轮保守计 **约 `$0.37`**。Terraform destroy
+20/20 完成；AWS 复核 non-terminated 实例、实验 EBS、EIP 均为 0，账号无运行实例。实验逐轮累计由
+约 `$19.14`（含 debug fleet 追加 `$1.05`）更新为 **约 `$19.51`**；Cost Explorer 8 月 22 日当日数据
+尚未入账，最终以日结账单为准。
+
+清理补记：复核发现复用的临时桶 `arladkr-ssm-992382847511` 内残留 8 月 22 日三轮（n=32 私网
+10:37Z、n=32 公网 r3 13:39Z、本轮 Practical 17:00Z）共 211 个 setup 分片对象，均为可公开传输
+材料、总体积不足 1 MB；已全部删除并移除该桶（非本实验的 `system-backup-*` 桶未动）。后续每轮
+结束应把该桶清空纳入固定清理步骤，避免依赖单轮命令的自动删除路径。
+
+## 2026-08-22 suite 运维修复：stdout 行缓冲与凭证预检（本地，无 AWS 费用）
+
+针对本轮暴露的两个运维缺陷修改 `practicaladkr_project_code/fabfile.py`，不触碰协议、bench 参数、
+latency 或通信量口径：
+
+1. **stdout 行缓冲**：fabric 长任务输出到管道/文件时 Python 默认 8 KiB 块缓冲，`tee` 侧日志会
+   静止数分钟，曾被迫改用 SSM 命令历史判断进度。现 fabfile 导入时对非 TTY 的 stdout/stderr 执行
+   `reconfigure(line_buffering=True)`，经计时验证 print 后 1 秒内可见（旧逻辑需等块满或进程退出）。
+   该修复对 `PYTHONUNBUFFERED=1` 环境变量方式二选一即可，代码内修复优先后续调用方无需再记忆。
+2. **凭证预检**：新增 `_aws_credential_preflight`，在 `aws-paper-run` 与 `aws-private-suite`
+   terraform apply 之前执行：(a) STS `get_caller_identity` 快速失败，凭证已死时不再创建 fleet；
+   (b) 读取 `~/.aws/sso/cache` 中 token 的 `expiresAt`，剩余时间低于该轮 `timeout_s+1200s`
+   预留时打印告警。本轮 16:51Z 的 SSO 中断即属该类（token 于运行中过期且 refresh token 已被
+   单次消费失效）；预检不能完全阻止运行中过期，但把"启动前就注定失败"的轮次挡在计费之前。
+   dry-run 路径不触发预检；两个既有 suite 单测已补 `_aws_credential_preflight` mock，另新增
+   预检专项测试（有效/过期/死凭证三分支）。`test_fabfile` 全套 **62/62 通过**，`py_compile` 通过。
+
+### 提速结论（已验证的时间线拆解）
+
+本轮 16:33:49Z--17:13:30Z 共约 40 分钟，其中 SSO 事故与人工恢复约 15 分钟；正常路径约 25 分钟，
+而协议本体仅 2--5 秒。固定开销构成为：fleet 启动 + SSM Online 等待约 6--8 分钟（AWS 侧固有）、
+当前源码交叉编译与分发约 2--3 分钟、逐阶段 SSM 批量命令每条 5--15 秒、destroy 约 2 分钟。按收益
+排序的执行规则（后续轮次遵循）：
+
+1. **一轮多采样**：bench 支持 `-runs N`；单轮 `-runs 1` 即销毁 fleet 把 25 分钟基础设施摊到 1 个
+   样本。正式数据轮应使用同一 fresh fleet 执行 `-runs 5--10`（ARL 与 Practical 各自多 run，中间以
+   cleanup-ready barrier 隔离），单样本成本降约一个数量级，同时满足 median/p95 报告要求。
+2. **源码未变时跳过 staging**：`stage_current_binaries: false` + pipeline AMI 可省约 3 分钟，但
+   仅当 AMI 内置二进制 digest 与当前 checkout 构建一致时允许（论文"运行当前源码"语义）；digest
+   不一致必须重新 bake 或保持 staging。
+3. **非论文调试轮可保留 fleet 复用**（约 `$0.57/小时`/10 台）：本轮 Practical 续跑已验证同 fleet
+   跨协议复用可行；论文数据轮仍必须 fresh fleet。
+4. **启动前凭证检查已由预检自动化**（见上）。
+
+### PracticalADKR "recast/partial-verify" 优化启用情况查证
+
+全库检索不存在名为 "good cast" 的代码或文档标识；与该称呼对应的是论文
+share-dispersal-then-agree-and-**recast** 范式及其配套验证优化。本轮 Practical 测试
+（`run-20260822-170102`，`-n 10 -f 3 -kappa-profile matched-lifetime -strict-network=true`，
+未传 `-ablation-mode`）的启用情况：
+
+- **Recast 阶段**：始终执行。`core/kappa.go` 按 profile 选择 k；f=3 时任何 profile 的 k 循环都
+  终止于 `k=f+1=4`（k>f 时 honest inclusion 确定性成立，失败概率 `-inf`），即确定性包含的 Recast。
+- **Partial-verify（条目级预调度部分验证 + 结果多播）**：**已启用**。`core/adkr.go` Phase 6 在
+  `ablation-mode=none`（默认）走 `runPartialVerificationMulticast`——每方只验证 2f+1 个条目并交换
+  签名投票，f+1 正票即接受（`core/partial_verify_multicast.go`）；lane 覆盖不足 2f+1 会显式报错。
+  两个消融开关 `no-partial-verify`/`full-local-verify` 在 `strict-network=true` 下被直接拒绝
+  （adkr.go:585-593），且 multicast 路径失败时 strict 模式不允许回退全本地验证。本轮 10/10 成功
+  且使用 strict-network，故 partial-verify 多播路径在全部节点实际走通。
+- 证据缺口：schema v4 compact 白名单未保留 `kappa=`/`ablation_mode`/`mean_partial_verify_ms`
+  字段，artifact 单独不可证；启用结论由 bench 参数 + 代码分支 + strict 成功判据联合得出。建议后续
+  把这三个字段加入 compact 白名单（每行仅增加约 60 字节），使优化启用情况可直接从 artifact 复核。
+
+### 更正与补充：PracticalADKR 的 Delta（δ）好情况优化未启用
+
+上一小节回答了 recast/partial-verify；用户实际询问的是论文的 **δ（Delta）好情况优化**
+（论文 Fig. 4c/4d 与实验章节："wait for a short time δ after distributing the shares, instead of
+proceeding immediately after receiving 2f+1 signatures"，论文取 δ=1s@n=127/196、2s@n=56，好情况下
+运行时间降 40--54%）。代码结论：
+
+- **δ dealing 窗口已实现**：`experiments/practical-adkr/core/pvss_dxt.go:617-656`——dealer 收满
+  2f+1 ACK 后不立即结束，额外等待 δ 窗口收集慢节点的签名，使其进入 transcript、减少后续 VE 验证
+  条目；受环境变量 `PRACTICAL_DEALING_DELTA_MS` 控制，**默认 0 = 关闭（legacy 阈值即推进）**。
+- **配套 KEY wait-all 已实现**：`core/comp_multicast.go:446-448`（论文自 [23] 的第二个好情况优化，
+  Fig. 4d）——key derivation 达到插值阈值后额外等待窗口收集其余委员会 KEY 消息，受
+  `PRACTICAL_DERIVE_WAIT_ALL_MS` 控制，**默认 0 = 关闭**。
+- **本轮 `run-20260822-170102` 未启用任何一个**：bench 参数与 fabric 编排均未注入上述环境变量，
+  Practical 以 legacy proceed-at-threshold 基线运行。这不会让 Practical 的成绩被低估为不公平——
+  恰恰相反，δ 优化只会让 Practical 更快，因此本轮 ARL 对 Practical 约 2.3 倍的延迟优势是在
+  Practical 未开好情况优化的保守基线上取得的；若为论文比较 Practical 最佳配置，必须补一轮启用
+  δ 的对照，届时 ARL 优势可能收窄。
+- **启用方式（无需改代码）**：`_remote_env_lines` 支持按项目透传环境变量
+  （fabfile `_remote_env_lines`，`projects.<project>.env` 映射）。在实验 config 中加入：
+
+```yaml
+projects:
+  practical-adkr:
+    env:
+      PRACTICAL_DEALING_DELTA_MS: "1000"   # 论文 n>=127 用 1s；n=10 无论文推荐值，需自定 sweep
+      PRACTICAL_DERIVE_WAIT_ALL_MS: "1000"
+```
+
+并在实验记录与本文表中显式登记；同 fleet 的 ARL/Practical 对照轮必须声明两者各自的优化配置，
+避免不可比。注：n=10 下论文没有 δ 推荐值（其实验从 n=56 起），小委员会的 straggler 收益需要
+单独 sweep 后再定。
+
+## 2026-08-22 私网 n=10 双协议复测 `paper-private-n10-current-20260822-ae`（部署耗时度量轮）
+
+与 `-ad` 轮相同的配置与 bench 参数（v6 AMI、`us-east-1f`、10 台 `c7g.xlarge` Spot、私网
+`10.42.1.10--19`、`n=10,f=3,runs=1`），目的：(a) 验证行缓冲与凭证预检两项运维修复在真实 suite
+中的表现；(b) 首次以实时日志逐段度量部署编排耗时。当日 SSO token 仍处于过期状态（refresh token
+已失效），沿用 CLI 角色凭证缓存（有效至 `20:52Z`）生成临时静态 profile 后一次性完成，全程**零人工
+干预**：`17:46:12Z` 启动，`18:15:46Z` 结束，**29m34s**，`status=success`、`cleanup=destroyed`、
+`final_cleanup=cleanup-ready`。预检正确打印 `credentials OK` 与 `cached SSO token already expired`
+告警；实时日志全程每 10 秒有推进，无需再进入实例判断进度（仅按用户要求做了一次实例内验证：协议
+status 早已 `success`，控制面检测落后于协议完成）。
+
+### 阶段耗时拆解（UTC）
+
+| 阶段 | 区间 | 耗时 | 备注 |
+| --- | --- | ---: | --- |
+| Terraform apply | 17:46:40-17:50:30 | 3.8 min | node[0] Spot 分配独占约 3 min；其余 9 台 30-40 s |
+| aws-up SSM Online 等待 | 17:50:30-17:53:45 | 3.2 min | 实例 17:47:22 启动，末节点 17:51:54 online |
+| staging + ARL setup | 17:53:45-17:57:36 | 3.9 min | Go 缓存秒编译（digest 同昨日）；ARL setup 缓存 miss 重建（见下） |
+| ARL barrier+launch+ready | 17:57:36-18:01:04 | 3.5 min | cleanup-ready 40 s；start_at=18:00:50；协议本体约 2 s |
+| ARL wait 检测 | 18:01:04-18:04:54 | 3.8 min | 实例内 status 早已 success；轮询粒度约 90 s/轮 |
+| ARL collect | 18:04:54-18:06:41 | 1.8 min | |
+| Practical setup（缓存命中） | 18:06:41-18:08:36 | 1.9 min | |
+| Practical barrier+launch+ready | 18:08:36-18:10:26 | 1.8 min | cleanup-ready 20 s；start_at=18:10:24 |
+| Practical wait 检测 | 18:10:26-18:12:33 | 2.1 min | 协议本体 4-12 s；`[12s]` 时已 8/7 |
+| Practical collect | 18:12:33-18:12:53 | 0.3 min | |
+| final cleanup + destroy | 18:12:53-18:15:46 | 2.9 min | |
+
+### 结果
+
+| 项目 | run_id | 完成 | mean latency | median | min--max | sent/recv 均值 | 共识 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| ARLADKR | `run-20260822-175905` | `10/10`（quorum `10/7`） | **`1888.87 ms`** | `1868.42` | `1785.07--2004.83` | `4.08 / 4.03 MB` | 单一 hash `69c9d62f...569ee77` |
+| PracticalADKR | `run-20260822-180845` | `8/10`（quorum `8/7`） | **`3804.53 ms`** | `3795.89` | `3731.51--3904.52` | `0.99 / 0.98 MB` | 单一 hash `b13caec4...b60c50` |
+
+ARL 与 `-ad` 轮几乎一致（`1888.87` 对 `1896.01 ms`），且节点 `10.42.1.16` 本轮恢复成功（上轮全零）。
+Practical 在 wait 达到 quorum 时 2 台节点（`.13`/`.17`）仍在运行，collect 只取得 8 份快组样本——
+本轮 `3804.53 ms` 全部来自 3.7-3.9 s 快组，缺少上轮 4.6-4.8 s 慢组，**不能与 `-ad` 轮 10 节点的
+`4335.03 ms` 直接比较为"Practical 变快"**；这同时说明 quorum 即返回的 wait 策略对延迟分布有采样
+偏差，正式数据轮应等待全部节点或固定时间窗后再收集。
+
+### 与 `-ad` 轮的流程对比与新优化点
+
+本轮 29m34s vs `-ad` 事故轮 40 min（含约 15 min SSO 中断）；扣除本轮两个一次性异常（node[0] Spot
+等待约 3 min、ARL setup 缓存 miss 重建约 2 min）后约 26 min，与 `-ad` 正常基线相当——**部署流程
+本身未变快（无代码改动），质变在于全程实时可观测与零人工干预**。本轮拆解确认的下一批优化点按收益
+排序：
+
+1. ~~**`aws_wait` 检测延迟（两协议合计约 6 min，最大可优化项）**~~ **已实现并经 2026-08-23
+   `-af` 轮实测验证：ARL wait 3s、Practical wait 63s、无返回停滞，整轮 7m50s。**更正根因：状态扫描本就是一条批量 SSM 命令，慢在两处——(a) sweep 要等全部
+   10 台到达终态才返回，一个慢 agent 即把 ARL 首轮拖到约 88 s（协议本体约 2 s）；(b) 每轮循环
+   开头执行 `_assert_aws_fleet_unchanged` EC2 describe，`-ae` 轮 Practical 在 quorum 判定后到
+   返回之间实测停滞约 100 s（疑似 describe 限流重试）。修复见下节：quorum 即返回 + sweep 时限
+   20 s + 断言移至决策边界。
+2. **setup 缓存键应排除编排代码**：本轮修改了 `fabfile.py`/`test_fabfile.py`，协议 Go 源码与二进制
+   digest 均未变（`rladkrbench` 仍为 `924019ec...`），但整树归档 digest 变化导致 ARL setup 缓存
+   miss、重建耗时约 2 min。缓存键应改用协议二进制/Go 源 digest。
+3. Practical 的 8/10 收集偏差：见上，wait 返回策略需在正式数据轮调整。
+4. 单节点 Spot 分配等待（3 min）为 AWS 侧方差，代码不可修；可接受或预查 placement score。
+
+资源：10 台实例 `17:47:22--28Z` 启动、约 `18:14:14Z` 前后终止，合计 **4.477 instance-hours**；
+Spot `$0.234` + 公网 IPv4 `$0.022` + gp3 `$0.015` ≈ **`$0.27`**。Terraform destroy 20/20；
+复核 non-terminated 实例、EIP 均为 0；本轮复用的 `arladkr-ssm-*` 分发桶已按新清单规则清空删除。
+实验逐轮累计由约 `$19.51` 更新为 **约 `$19.78`**。base config 的 profile 指向与本地临时静态
+profile 已在轮末恢复/删除。
+
+## 2026-08-23 `aws_wait` 状态检测加速与轮询间隔审计（本地，无 AWS 费用）
+
+按用户要求把状态轮询节奏压到 10 秒级。根因更正与实现（全部在 `fabfile.py`，协议与计时口径不变）：
+
+1. **`_ssm_run_command_many` 新增 best-effort sweep 参数**：`early_success_threshold`（成功数达到
+   阈值即返回已得输出，并对仍 pending 的实例执行 `cancel_command`）与 `max_wait_seconds`（sweep
+   时限，到期返回已完成的终端结果，同样取消 pending）。部分模式下不抛 SSM 批量错误——未报告的
+   节点在下轮 sweep 中自然重新可见；这使状态读摆脱"最慢 agent 决定整轮"的等待（`-ae` 轮 ARL
+   首轮 sweep 约 88 s 即此因，协议本体约 2 s）。
+2. **`aws_wait`（SSM 路径）**：状态 sweep 以 `early_success_threshold=quorum`、
+   `max_wait_seconds=status_sweep_timeout_seconds`（runner 配置，默认 20 s）调用；实测有效检测
+   节奏 = SSM agent 拾取（约 5-15 s，AWS 侧物理下限）+ 1-2 s，达到用户要求的 10 秒级；
+   `interval_s` 保持 2 s（非瓶颈）。fleet 一致性断言从"每轮循环一次 EC2 describe"改为
+   入口/成功/失败/超时四个决策边界各一次——`-ae` 轮 Practical quorum 判定后约 100 s 的返回
+   停滞即来自该每轮 describe（疑似限流重试）；Spot 回收的 invalidated 语义经边界断言保留。
+3. **轮询间隔审计（全部检视，仅上述两处需要改）**：批量 SSM 命令内轮询 1 s、单实例 SSM 等待
+   1 s、runner ready quorum 轮询 1 s、setup 重试退避 `2^n` 封顶 8 s——均已是紧的；SSM Online
+   等待重试 5 s 与 roster 稳定窗 15 s（`roster_stability_seconds`）为正确性保护（防 Spot 静默
+   替换，曾有 n=32 轮因此 invalidated），保留不缩减。
+
+新增 3 项单测（quorum 早返回并取消 pending、sweep 时限部分返回不抛错、`aws_wait` 边界断言与
+参数传递），既有 1 项区域路由测试的 mock 签名随内部调用约定微调（接受关键字参数）。全套
+**65/65 通过**，`py_compile` 通过。尚未在 AWS 实测：静态凭证已于 `2026-08-22T20:52Z` 过期且
+SSO refresh token 失效，下一次实验前需先 `aws sso login --profile arladkr-sso`；预期收益为
+`-ae` 轮时间线中的 ARL wait 3.8 min → 约 0.5 min、Practical wait 2.1 min → 约 0.5 min，
+外加消除返回停滞。注意：本修改继续改变整树源码 digest，若 setup 缓存键未先修复（优化点 2），
+下轮 ARL setup 仍会缓存 miss 重建。
+
+## 2026-08-23 私网 n=10 双协议 `paper-private-n10-current-20260823-af`（wait 加速实测验证轮）
+
+用户重新 `aws sso login` 后（新 token 至 `03:21Z`，CLI 与 fabric 的 boto3 均直接可用，无需静态
+profile），以与 `-ae` 完全相同的配置与 bench 参数复测，验证 `aws_wait` 加速改造。结果
+`status=success`、`cleanup=destroyed`、`final_cleanup=cleanup-ready`，全程
+**02:23:08Z--02:30:58Z 共 7m50s**（`-ae` 轮 29m34s，其中本_round 亦受益于本轮 Spot 分配与 SSM
+注册都较快：apply 约 1 min、SSM Online 约 0.5 min，属 AWS 侧方差；结构性收益见下）。
+
+**wait 加速验证（本轮目的，达成）**：
+
+- ARL wait：synchronized start `02:26:11Z` 后首轮 sweep `[3s] success=10/7`，quorum 即返回，
+  含返回断言共约 13 s——`-ae` 轮同阶段 3.8 min（首 sweep 88 s + 逐轮 EC2 断言）。
+- Practical wait：`[63s] success=10/7` 后立即返回，无 `-ae` 轮 quorum 判定后约 100 s 的停滞；
+  本轮 **10/10 全部成功并收集**（`-ae` 轮 wait 在 8/10 即返回、丢失 2 个慢节点样本）。
+- 其余阶段：ARL setup 缓存 miss（fabfile 又改，新键 `a244b66fd4f3`）重建约 1 min；Practical
+  setup 缓存命中；两协议 collect 合计约 0.9 min；final cleanup-ready + destroy 约 2.2 min。
+
+| 项目 | run_id | 完成 | mean latency | median | min--max | 共识 |
+| --- | --- | ---: | ---: | ---: | ---: | --- |
+| ARLADKR | `run-20260823-022543` | `10/10` | **`2461.49 ms`** | `2478.24` | `2339.56--2559.51` | 单一 hash `1befb01f...590e90d` |
+| PracticalADKR | `run-20260823-022730` | `10/10` | **`3806.73 ms`** | `3809.01` | `3731.52--3884.18` | 单一 hash `5f9fa202...e800b` |
+
+延迟口径注意：ARL 三轮同源码同拓扑均值为 `1896/1889/2461 ms`（`-ad/-ae/-af`），单 epoch 跨
+fleet 方差约 `30%`，再次说明单轮 smoke 不能作为论文数值，正式数据需多轮 median/p95。Practical
+本轮 10/10 全在快组（`3.73--3.88 s`），与 `-ae` 轮 8 节点快组均值 `3804.53` 一致；两轮 Practical
+的慢组样本（`4.6--4.8 s`）仅在 wait 等全量时出现，提示快慢双峰可能与节点启动顺序/角色分布相关，
+值得在多轮采集中验证。两个 summary 的 `quorum_success=true`、digest/timing 一致性检查全部通过。
+
+资源：10 台实例平均存活 `6.3 min`，合计 **1.046 instance-hours**；Spot `$0.055` + IPv4 `$0.005` +
+gp3 `$0.004` ≈ **`$0.06`**。Terraform destroy 20/20；non-terminated 实例、EIP 均为 0；复用的
+`arladkr-ssm-*` 分发桶已清空删除。实验逐轮累计由约 `$19.78` 更新为 **约 `$19.84`**。
+
+## 2026-08-23 私网 n=64 双协议首测 `paper-private-n64-current-20260823-a1`（invalidated）
+
+使用新配置 `deployment/config.aws-private-n64-use1.yaml`（n=64、f=21、quorum 43、`/24` 私网
+`10.42.1.10--73`、v6 AMI、us-east-1f、64 台 `c7g.xlarge` Spot=256 vCPU，配额内）。本轮为首次
+n=64：暴露并修复一个编排层规模缺陷，两个协议均未产出有效数据，整轮 **invalidated**，不纳入任何
+性能结论。时间线（UTC）：
+
+| 时间 | 事件 |
+| --- | --- |
+| 02:36-02:39 | Terraform apply：64 台全部快速创建（约 2.5 min，无 Spot 尾延迟），74 资源 |
+| 02:39-02:47 | aws-up：64 agent 渐次 SSM Online（约 8 min），stability recheck 通过 |
+| 02:47-02:50 | staging（Go 缓存秒编译）+ ARL n=64 CV keygen（新缓存 `7e6b4e7f419e`，约 2.5 min）+ S3 分发 + 2x32 批安装成功 |
+| 02:50-03:00 | **本地 boto3 卡死**：setup 安装后的 S3 清理调用挂在 CLOSE-WAIT 半关闭连接上（SSL read 60 s 超时 × 重试），主线程 futex 等待 ~10 min；杀掉 suite 进程 |
+| 03:02-03:12 | 手动续跑 ARL：cleanup-ready barrier 64/64；**发现 `_ssm_wait_quorum` 单 Region >50 台直接 ValueError**（run-20260823-030219 未发布 start 即中止） |
+| 03:12-03:15 | 修复：quorum 等待按 50/批分块发送命令并合并轮询；新增单测（64 台 → 50+14 分块、quorum 43），全套 **66/66 通过** |
+| 03:16-03:25 | 重启 ARL `run-20260823-031557`：barrier 64/64、launch 64/64、**分块 ready quorum 实测通过（50/43）**、同步 start_at=03:25:11Z |
+| 03:26-03:44 | **ARL 协议停滞**：sweep 全程 running、无 success/failed；节点 load 0.01、bench 进程 sleeping、SIGQUIT 转储显示 23307 个 goroutine、大量 `[chan receive, 12 minutes]`；约 780s 后 13 台 failed、其余仍卡，`[wait] quorum impossible: failed=27 required=43` |
+| 03:47-03:52 | 诊断性 collect：50 台 failed 节点 bench 行 `success_runs=0`、`mean_all_latency_ms≈1057592`、`consensus_hash=none`；14 台 unavailable（进程仍卡）；journald 限流截断了 goroutine 转储仅存片段 |
+| 03:54-03:57 | Practical n=64 keygen（约 2 min，新缓存）+ 2x32 批安装成功；随后又遇同型 S3 清理 boto3 卡死，杀掉续跑 |
+| 04:01-04:12 | Practical `run-20260823-040134`：barrier 64/64、launch 64/64，但 **runner ready quorum 0/43**——节点上 transient 单元未产生 `.ready` marker（run 脚本本身未执行；按用户指示收尾，未继续定位） |
+| 04:16-04:20 | Terraform destroy 74/74；non-terminated 实例、EIP 均为 0；S3 分发桶残留已清空删除 |
+
+### 问题分析（按证据强度排序）
+
+1. **ARLADKR n=64 活性失败（协议层，最有价值的负结果）**：全部节点空闲等待而非计算（load 0.01），
+   goroutine 阻塞在 channel receive 超过 12 min，最终 0 成功。活跃节点 ≥50 > n-f=43，阈值理论上
+   可满足，排除简单的"缺席节点过多"。可能方向：某条等待路径在 n=64 下假设了全 n 响应、
+   receiver/actor 地址表在 2n=128 个逻辑 actor 下的 lane 映射问题、或 14 台未随 start 发布的节点
+   的 listener 缺失破坏了某个未设阈值的服务。需要本地 proc-sim n=64 复现 + goroutine 全量转储
+   （journald 会截断，应转储到文件再 S3/分块拉取）。n=10/n=32 同代码路径正常。
+2. **编排层 >50 台 quorum 等待缺陷（已修复）**：`_ssm_wait_quorum` 原先单 Region >50 台直接
+   抛错，SSM 单命令 50 实例上限未分块。已改为 50/批发送 + 合并轮询，66/66 测试通过并在本轮
+   ARL launch 实测验证（ready=50/43）。
+3. **本地 boto3 SSL 卡死（环境层）**：02:50Z 后本机到 AWS 的网络质量下降，setup 安装后的 S3
+   清理调用挂在 CLOSE-WAIT 连接（60 s SSL read × botocore 重试），两轮各损失约 10/5 分钟。
+   `_aws_boto3_client` 未配置显式 connect/read timeout——建议后续为所有 boto3 client 注入
+   `botocore.config.Config(connect_timeout=5, read_timeout=30, retries={'max_attempts': 3})`，
+   让慢调用快速失败而不是无限磨。
+4. **Practical ready quorum 0/43（未定位）**：run 脚本未在节点执行（`.ready` 未生成），与 ARL
+   卡住进程是否残留占用端口的关系未验证（barrier 报告 64/64 cleanup-ready，但 ARL 的 31 个
+   sleeping 进程是否被正确回收未复核）。下次 n=64 Practical 应先验证 ARL 进程归零再 launch。
+5. 64 台 barrier 约 4.5 min、aws-up 约 8 min——n=64 的编排固定开销显著大于 n=10（barrier 内
+   多轮 SSM × 64 台），如需多轮 n=64 实验应考虑进一步并行化 barrier 内部步骤。
+
+### 成本
+
+64 台实例 `02:37:22Z` 前后启动、`04:19-04:20Z` 终止，平均存活 103.5 min，合计
+**110.35 instance-hours**：Spot（`$0.0523/h`）约 `$5.77`、公网 IPv4 约 `$0.55`、gp3 约 `$0.43`，
+本轮保守计 **约 `$6.75`**（为当前最贵单轮；其中协议停滞与诊断占约 40 min ≈ `$2.4`，属首次 n=64
+的必要试错）。实验逐轮累计由约 `$19.84` 更新为 **约 `$26.59`**。base config、tfvars 的 profile
+指向与本地临时静态 profile 已恢复/删除；S3 分发桶已清空删除。
+
+## 2026-08-23 本地 n=64 双协议 TCP 测试（无 AWS 资源，新增成本 `$0`）
+
+按上节"尚未完成的下一步"在本地复现 n=64。环境：单台 224 vCPU（AMD EPYC）x86_64、
+275 GiB 内存；ARLADKR 用 `scripts/run_cv_cluster.sh 64 21`（组件 20000-20127、MVBA
+20228-20291，等全部 64 个 listener 就绪、每节点 GOMAXPROCS=3）；PracticalADKR 用
+`deployment/docker/run_proc_sim.py`，`bench_latency` 由当前 checkout 的
+`experiments/practical-adkr` 镜像构建为 x86-64（sha256
+`71960756e6705dd5e1badf275b8411fbd4b561553f29e54907dfef58c03aeb3f`；注意
+`practicaladkr_project_code/practical-adkr` 副本已落后，无 δ 代码，AWS 配置的
+`local_path` 也指向 ARL 仓库镜像）。
+
+### ARLADKR n=64：64/64 成功，未复现 AWS 停滞
+
+单轮全流程（含 keygen）约 2.5 分钟：`successful_nodes=64`、quorum `43` 达成、唯一
+consensus hash `faa526fecbe2529a69b2b84408460b99c3606bd9159fd4491a64dc37fcf8fc39`。
+service-grace-adjusted latency 均值 `28020.56 ms`（min/max `27758-28401`，raw 约
+`38020` 含 `10000 ms` grace）；阶段均值：leaf build `2251 ms`、candidate formation
+`20170 ms`（proposer slots `19951 ms`）、aggregate agreement `1317 ms`、recover shard
+`12451 ms`（含 grace）、receipt `156 ms`；通信量 `30.44/30.40 MB` 每节点。仍为
+smoke sampling（proposer/validator sample=3）。
+
+与 AWS n=64 停滞的关键差异是启动语义：本地 harness 等全部 `n=64` listener 就绪才放行
+（`RLADKR_LISTENER_READY_NODE_COUNT=n` + epoch barrier + MVBA peer wait=all），AWS runner
+在 `n-f` ready 即发布同步 start（当轮 64 台 launch 但 ready 只到 `50/43`，14 台未随
+start 进入）。本地全量就绪下协议完整完成，说明当前证据**不支持**"n=64 存在协议层死锁"，
+更支持"未就绪节点缺失破坏某条未设阈值的服务"这一假设。但这不是 AWS 失败的证明：本地
+共享主机 GOMAXPROCS=3/节点、回环零 RTT，仍需按下节方向在 AWS 复测（例如临时把 runner
+readiness 提为全量 n 或延长 ready 等待后对照）。
+
+### PracticalADKR n=64：三轮定位 + dealing-δ 达 quorum；发现 wait-all δ 严格等值 bug
+
+编排/环境修复（不改协议代码）：
+
+1. `run_proc_sim.py` 在无延迟 profile 时无条件注入 `PRACTICAL_DXT_FAST_LOCAL_ACKS=1`，
+   与 strict-network 的拒绝守卫（`adkr.go:2196`）冲突，首轮 64/64 立即失败。已改为尊重
+   外部覆盖，本地 strict 轮以 `=0` 运行。
+2. `bench_latency` 不会自建 `PRACTICAL_ARTIFACT_CACHE_DIR`，AWS 由 fabric 预建；本地需
+   预创建 `artifact-cache/` 目录，否则 64/64 死于 signing setup lock ENOENT。
+3. n=64 本地规模调参（均为文档已记录的环境变量）：`PRACTICAL_KEY_DERIVE_TIMEOUT_MS`
+   45s→300000、`PRACTICAL_PARTIAL_VERIFY_TIMEOUT_MS` 8s→60000（该默认值 n=10/32 够用、
+   n=64 全员同时进入时不足，64/64 死于 partial-verify multicast timeout；建议后续像 DXT
+   deadline 一样做成规模自适应）；proc-sim 新增 `PROC_SIM_AFFINITY_SPAN=3`（每节点 3 核
+   亲和，默认 1 保持旧行为）压缩 64 进程的阶段性偏斜。
+
+**协议 bug（Fig. 4d δ / `PRACTICAL_DERIVE_WAIT_ALL_MS>0` 路径不可用）**：开启
+derive wait-all 后两轮分别 `22/64`、`29/64` 节点死于 `CompProve completion input
+incomplete`。根因是 `comp_multicast.go:581` 的 `len(valid) != threshold` 严格等值检查
+（`:606` 验证侧 `len(ShareDigests) != Threshold` 同样严格）：wait-all 窗口让 collector
+在达到 43 后继续收集，收集数几乎必然 >43，构建完成证书必然失败。该路径默认关闭、无任何
+`waitAll>0` 测试覆盖。修复方向为构建证书时按确定性规则（如最小 sender id）截取 threshold
+个子集；本轮未改协议代码。
+
+**有效结果**（同一调参环境，单 epoch，本地回环）：
+
+| 轮次 | δ dealing | 成功 | 均值 latency | median / max | 共识 |
+| --- | --- | ---: | ---: | ---: | --- |
+| r6 | `PRACTICAL_DEALING_DELTA_MS=1000` | `45/64`（quorum 43 达成） | `110851 ms` | `112616 / 124757` | 唯一 `6c51ba21…` |
+| r7（对照） | 关闭 | `52/64`（quorum 达成） | `171077 ms` | `171226 / 180819` | 唯一 `77251d24…` |
+
+r7 各阶段（MVBA `48.6s`、recover `28.2s`、partial verify `18.6s`）显著慢于 r6
+（`29.5/5.1/2.2s`），但**不能归因 δ**：本地回环 ACK 全部快速到达，dealer 走
+"收满全体立即结束"分支（`pvss_dxt.go:636`），δ 窗口基本不构成约束（两轮 DXT 字节
+仅差约 1%）；且两轮为单样本、共享主机 run-to-run 方差大（测试期间 5/15 分钟负载均值
+16-20）。δ 的真实收益需在 WAN/straggler 环境（AWS）验证。每轮 12-19 个尾部节点因快
+节点完成即退出（`-runs 1`）导致 readiness 探测不足而失败，与 AWS n=32 Practical
+`27/32` 的尾部形态同型。通信量约 `154.8/154.7 MB` 每节点，约为 ARL 本地 n=64
+（`30.4 MB`）的 5 倍。
+
+### 产物与遗留
+
+ARL 产物：`/tmp/arladkr-n64-local-r1/`（cluster-results.log 含 64 条 E2E 结果）；Practical
+产物：`/tmp/practical-n64-{delta-r1..r4,nodelta-r5..r7}/`（r1/r2 为失败定位轮）。两处
+harness 修改在 `practicaladkr_project_code/deployment/docker/run_proc_sim.py`（该目录无
+git，改动未入库）。未启动任何 AWS 资源，本轮新增 AWS 成本 `$0`；下一步若在 AWS 复测
+n=64，应先在 ARL 侧对照"全量 n readiness"与现行为，并为 Practical 打开 dealing-δ、
+保持 wait-all 关闭直至上述 bug 修复。
+
+## 2026-08-23 本地 n=96 双协议 TCP 测试 + CPU 监控（无 AWS 资源，新增成本 `$0`）
+
+同一 224 vCPU 主机。CPU 监控用自写 `/tmp/cpu_monitor.py`（每 5 s 从 `/proc/<pid>/stat`
+tick 差分统计目标进程 CPU% 总和/均值/峰值、RSS 与系统 CPU%，避免 ps 的生命周期平均失真；
+注意 `pkill -f` 匹配模式会命中自身 shell，需用 `[.]` 转义规避——与本文 cleanup barrier
+自匹配历史教训同源）。
+
+### ARLADKR n=96：94/96 成功，quorum 65 达成
+
+`run_cv_cluster.sh 96 31`（f=31、kappa=32、quorum 65；组件 20000-20191、MVBA
+20292-20387；每节点 GOMAXPROCS=2/leaf workers 2；epoch timeout 900s 只用掉约 81s）。
+全流程含 keygen 约 4 分钟：`successful_nodes=94`、`quorum_success=1`、唯一 consensus
+hash `30a7dc03595f65b85fbfd1004283ae3614b6a76e92cce22e1bf74a6925e20376`；2 个节点未在
+quorum 后 15s settle 窗口内完成、按 harness 规则被清理（NO_RESULT，不影响 quorum 判定）。
+
+| 指标 | 94 节点均值 | 范围 |
+| --- | ---: | ---: |
+| service-grace-adjusted latency | `81119.10 ms` | `80823.99-81475.21` |
+| raw latency（含 10 s grace） | 约 `91119 ms` | - |
+| leaf build | `5204.64 ms` | `2218-8721` |
+| candidate formation / proposer slots | `66897.96 / 66393.83 ms` | `63406-69931 / 63347-67524` |
+| aggregate agreement / recover shard / receipt | `2103.28 / 13498.74 / 279.81 ms` | - |
+| 每节点发送/接收 | `41.27 / 33.83 MB` | recv 最高 `384.0 MB`（proposer 节点） |
+
+相对本地 n=64（均值 `28020 ms`、proposer slots `19951 ms`），总延迟约 2.9 倍、proposer
+slots 约 3.3 倍，超线性增长主要来自 proposer slots 内的 component catalog 恢复与验证
+（每 proposer 需扫 65 个 component）。仍为 smoke sampling。
+
+**CPU 剖析**（96 进程，活动窗口约 100 s）：前 ~60 s 为 setup/leaf 阶段，持续仅约
+`1500-1700%`（15-17 核）；约 `13:39` 进入密码验证突发，**峰值 `19145%`（191 核，主机
+85%）**、系统 CPU 峰值 `84.6%`；峰值总 RSS `34.7 GiB`（约 360 MiB/进程）；随后节点集中
+退出、RSS 骤降。即本地 n=96 的瓶颈是短时 CPU 突发而非持续满载，224 核主机可承载。
+
+### PracticalADKR n=96：0/96，recast recovery 结构性卡死（用户中止后续测试）
+
+配置沿用 n=64 有效配方（dealing-δ=1000、`FAST_LOCAL_ACKS=0`、`KEY_DERIVE=300s`、
+`PARTIAL_VERIFY=90s`、亲和跨度 2、`-timeout 1200s`）。r1 全部 96 节点在约 `307 s` 墙钟
+同时失败：`recast recovery timeout: dealer=X holders=65 recipients=0; …; holder=0
+completions=0/65`（adkr.go:1926）。各节点对约 17-31 个 selected dealer 全部零 recipient
+完成；恢复进入前各阶段正常（无 CompProve/readiness/partial-verify 错误）。
+
+诊断证据：(a) 失败前 CPU 每进程仅 `0.5-0.8%`（纯等待，非计算饱和）；(b) 96 进程在
+同一期限同时退出（采样器在 5 s 内观测 96→22→0）；(c) 恢复默认窗口 120 s
+（adkr.go:1088，`PRACTICAL_RECOVER_TIMEOUT_MS` 可覆盖）内 `holderSeen=65` 齐而
+`recipientSeen=0`，与 n=64 同配置 5-28 s 完成形成质变。r2 将恢复窗口放大到 `600 s`
+重跑：至约 330 s（用户按需中止 Practical 测试）仍 0 成功、0 协议级失败、全体停在恢复
+等待，说明不是单纯窗口不足，n=96 的 recast fetch/完成交换存在结构性卡点，需代码级定位
+（候选方向：fetch 响应路径的串行 accept/限流、`lnByID` 监听器在 192 逻辑参与者下的服务
+容量、completion 阈值路径）。失败与 δ 无关（同配置 n=64 达 quorum；失败阶段在 recovery）。
+
+测试中止后已清理：bench 进程 0 残留、proto/MVBA 端口全部释放。产物：
+`/tmp/practical-n96-dealdelta-r{1,2}/`（r2 为中止轮，92 节点无结果行）。CPU 采样 CSV：
+`/tmp/cpu-arl-n96.csv`、`/tmp/cpu-practical-n96*.csv`。ARL n=96 产物：
+`/tmp/arladkr-n96-local-r1/`。本轮未启动 AWS 资源；在 Practical recovery 修复前，不应
+把 n=96 纳入 AWS 论文计划（n=64 及以下不受此影响）。
+
+### ARL n=96 延迟剖析与 4-worker A/B（81 s → 58 s 的归因）
+
+针对"n=96 均值 81 s 是否异常"做了逐节点分解与 A/B 复测。结论：**约 23 s 是本地 harness
+算力伪影，其余 ~58 s 中 ~2/3 是 proposer catalog 验证的 O(n²) 密码工作量**，不是网络或
+活性异常。
+
+逐节点分解（r1，每节点 GOMAXPROCS=leaf workers=224/96=2）：94 节点中仅 4-5 个 proposer
+（scan=65）实际执行 catalog 验证，其 `proposer_slots` 66.0-67.4 s 中 catalog verify 占
+55.4-62.4 s；其余 ~90 个节点 verify/recovery 计数为 0、slots 同为 65-67 s——它们在等首个
+verified candidate（candidate 为 ready-cert 模式，非 proposer 不重验 component）。191 核
+CPU 爆发窗口对应的是决策后**全体节点同时执行 aggregate recovery**（每人 2 核满载），
+不是 candidate 阶段。
+
+A/B 复测（`RLADKR_CV_GOMAXPROCS=4 RLADKR_LEAF_VERIFY_WORKERS=4`，即 AWS c7g.xlarge
+的 4 vCPU 口径，产物 `/tmp/arladkr-n96-local-w4/`）：95/96 成功、quorum 65、唯一共识。
+均值 `57969 ms`（-28.5%），proposer slots `43051 ms`，catalog verify `~32400 ms`
+（2 worker 时的 ~58.7 s × 2/4，符合预期）；`recover_shard` 13.2 s 不变（该阶段全体节点
+并发、主机总核为界）；leaf 5.2→5.9 s（轻微争用）。CPU 峰值 209 核 / sys 93.3%。
+
+catalog 验证每 proposer 总核时（components × 每 component 核时）：
+
+| n | components (n-f) | 每 component 接收者 L | 每 proposer 核时 | 相对 n=32 | components×L（O(n²) 预测） |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 32（本地基准） | 22 | 22 | ~14.6 core-s | 1x | 1x |
+| 64（本地 r1） | 43 | 43 | ~43 core-s | 2.9x | 3.8x |
+| 96（本地 r1/w4） | 65 | 65 | ~117-130 core-s | 8.0-8.9x | 8.7x |
+
+即现有 per-leaf 批量验证（receiver-evaluation batch + ownership batch）已消除更高阶
+项，但 **每个 proposer 仍需验证 n-f 个 component、每个 component 含 L=n-f 个 receiver
+的方程，总核时本质 O(n²)**；且每 epoch 有 proposer sample（3+fallback）个节点重复
+扫描同一批 component（n=96 时 ~5×130 ≈ 650 core-s 重复工作；validator prewarm 已被
+size-aware gate 关闭，未额外放大）。
+
+推论：(a) 本地 81 s 中 ~23 s 来自 harness `host_cpus/n` 整数除法把每节点压到 2 worker
+（n=64 为 3），AWS 4 vCPU 口径应接近 58 s 量级（ARM 与 EPYC 单核吞吐差异另计）；
+(b) 照当前实现外推 n=128（85 comps × 85 receivers ≈ 232 core-s/proposer）4-worker
+约 58 s、总延迟 ~85 s——**在 n≥96 论文实验前，catalog 验证需要一个结构性优化**：
+跨 proposer 共享/背书已验证 component（消 3-5× 重复）、跨 component 随机线性组合批量
+验证（需如既有 batch 工作一样做 soundness 分析）、或协议层减少 proposer 必验的
+component 数。本次仅做测试与剖析，未修改协议代码。
+
+### n=128 门控基准校准与 58 s 的压缩空间评估
+
+补充跑了 `BenchmarkCVV2ProposerCatalogVerifyN128`（`RLADKR_RUN_N128_LOCAL_BENCH=1`，
+EPYC 9754、GOMAXPROCS=4、与线上同一 recover→verify 流水线）：86 个 component
+**37.82 s/op**（9.51 GB/op、12.1M allocs/op），即 **1.76 core-s/component**（L=86）。
+两个修正：
+
+1. **每 component 成本对 L 次线性**（MSM/Pippinger 规模效应）：L=22/65/86 对应
+   ~0.66/~1.5/~1.76 core-s，catalog 总核时随 n 约 `n^1.7` 而非纯 `n^2`；n=128 外推
+   从上文 ~58 s 下修为实测 37.8 s（隔离、4 worker）。
+2. **in-cluster 32.4 s 含约 35% 主机争用**：n=96 隔离推算 ~24 s（65×1.5/4），集群内
+   其余 95 进程的 leaf/recover 与 proposer 验证重叠。AWS 一机一进程没有这项争用，
+   但 ARM 单核吞吐低于 EPYC 9754，两者大致相抵，n=96 AWS catalog 验证仍按 ~25-35 s 估。
+
+57.97 s 的构成与压缩路径（n=96、4-worker 口径）：leaf 5.9 + slots 43.0（catalog 验证
+32.4 + 流水线填充/中继尾部 ~10.6）+ agreement 2.0 + recover 实际 ~3.2 + 收尾 ~0.5。
+
+| 优化 | 类型 | 预期（集群口径） | 依赖 |
+| --- | --- | --- | --- |
+| 跨 component 批量验证（一次 MSM 合并全部方程） | 实现层 | 验证 32.4→11-20 s，总 ~37-46 s | soundness loss 分析 + 对抗性测试（沿用既有 batch 工作流程） |
+| proposer 分工互验 + f+1 背书交换 | 协议层 | 关键路径 /3：验证 ~11 s，总 ~37 s；与上条叠加 ~28-32 s | 背书语义与 FS transcript 绑定，需安全论证 |
+| 验证尾部（更早 prewarm、RS decode 提速） | 实现层 | -3-5 s | 无协议变更 |
+| leaf 构建再并行化 | 实现层 | -1-2 s | 边际 |
+| 8 vCPU 实例（c7g.2xlarge） | 环境 | 验证减半，总 ~40 s | 实验成本口径改变 |
+
+叠加后合理目标：仅实现层 **~38-45 s**；加 proposer 分工 **~28-32 s**；维持"每个
+proposer 独立验完全部 component"语义的下限约低 30 s（24 验证 + 6 leaf + 6 尾部 +
+2 agreement + 3 recover）。要进入 30 s 以内必须改验证分工或加每节点核数。以上为单轮
+估算，落地前按本仓惯例补齐定向测试、`-race`、全包回归与 soundness 记录。
+
+## 2026-08-23 catalog 验证剖析驱动优化：leaf 级子群批检等四项（本地验证，$0 AWS）
+
+按上节计划实施"跨 component 批量验证"。实现前的 pprof/block/trace/strace/内存剖析
+（n=128 门控基准 + n=64 双变体基准 + 自写并行度探针，探针与阶段计时脚手架已删除）把
+成本构成彻底改写，实际落地的四项修改与原始"合并 MSM 方程"设想不同，均按证据实施：
+
+**剖析结论**（n=64 hints 单进程，每 component ~721ms 单核"忙时"）：
+- **子群批检 487ms/component**：`assertDecodedSubgroup` 按 wire 段触发，每 component
+  **194 次**批检（平均仅 67 点/次），每次各付一次小 MSM + 一次 order-r
+  `IsInSubGroup` 标量乘（~2ms）——隐藏主因，此前任何口径都没拆出来；
+- APVSS 语句验证（evaluation/ownership batch + 签名）133ms；规范化重编码与帧解析
+  ~17ms（重编码经 size-hint 修复后仅 3.2ms）；
+- 每点 `SetRandom()` 直接打内核 CSPRNG（strace 实测单轮 **277 万次 getrandom**，
+  多 verifier 并发时在内核 CRNG 上串行化）；
+- 解码缓冲 `bytes.Buffer` 从零倍增（alloc 剖析 57.6% 在 growSlice，2.19GB/op）；
+- gnark 内层 MSM/批乘自起 goroutine 扇出（NbTasks 缺省与
+  `BatchScalarMultiplicationG1` 固有扇出），与外层 verify worker 池叠加。
+
+**实现**（协议语义不变，`8cee734` 工作树之上，未提交）：
+1. **leaf 级一次性子群批检**（`cv_point_hints.go`/`cv_point_subgroup_batch.go`/
+   `cv_sapvss_leaf_v2.go`）：`cvDecodeSidechannelV2` 增加 `deferredBatch` 收集器并
+   默认物化；各 wire 段 reader 的 `assertDecodedSubgroup` 改为把点移交收集器，
+   `cvDecodeLeafV2Sidechannel` 在 unsigned 解码完成后执行**唯一一次**全 leaf 批检
+   （先于 dealer 签名与 APVSS 验证拒绝）。独立 ACK 网络路径（side=nil）保持逐段即检。
+2. **FS 权重替代 SetRandom**（`cvAssertG1SubgroupBatch`）：challenge 由全部被检点的
+   压缩字节哈希导出（域 `CV-V2-SUBGROUP-BATCH-v1`，零值重试，幂次权重），与
+   `cvVerifyReceiverEvaluationsBatchV2` 同款 Fiat–Shamir 模式。**Soundness**：敌手
+   必须先固定全部点，权重才作为 RO 输出存在，无法比独立随机抽取更可预测；批检失败
+   语义与逐点检查一致（任意点在子群外 ⇒ 组合以 ≤ len(points)/r 概率漏检，与原实现
+   同界）。内核 CSPRNG 调用从解码路径完全移除。
+3. **解码缓冲 size hint**（`cvLeafV2CanonicalBytesSized` 等）：解码路径已知 wire
+   精确长度，两个装配缓冲一次 `Grow` 取代对数级倍增；hint 只影响分配策略，
+   欠估时回退增量增长，输出字节不变。
+4. **内层 MSM 串行化**（`cvG1LinearCombination`/`apvssCompactPointSum` 的
+   `NbTasks: cvNestedMSMWorkers`=1）：外层 leaf-verify worker 池已提供并行度，
+   消除 gnark 内部 goroutine 扇出与 channel 协调对外层 worker 的踩踏（与
+   `cvNestedMSMWorkers` 既有注释意图对齐；独立单次调用场景点数少，无并行损失）。
+
+**验证与结果**：
+
+| 指标 | before | after | 变化 |
+| --- | ---: | ---: | ---: |
+| n=64 门控基准 legacy（43 comps，4 worker） | 9.53 s | 5.81 s | -39% |
+| n=64 门控基准 hints | 7.11 s | **3.29 s** | **-54%** |
+| n=128 门控基准（无 hints，86 comps） | 37.82 s | 22.04 s | -42% |
+| 每 op 分配次数（n=64） | 3.03M | 1.52M | -50% |
+| 本地 n=96 集群 w4（GOMAXPROCS=4）全节点延迟 | 57.97 s | **49.97 s** | -13.8% |
+| 同上 proposer catalog 验证 | ~32.4 s | ~26.3 s | -19% |
+| 同上完成率 | 95/96 | **96/96（all_success）** | - |
+| 同上峰值 RSS | 27.3 GiB | 20.0 GiB | -27% |
+
+正确性：新增对抗性测试 `TestCVLeafWideSubgroupBatchRejectsPlantedOutsider`（真实
+leaf 植入 on-curve 非子群点，证明 leaf 级批检先于签名/规范化拒绝）与
+`TestCVDecodeSidechannelSubgroupCollector`（跨段收集/重置/拒绝）；既有 hints 回退、
+子群拒绝、round-trip 测试全部通过；`go test ./core -count=1`（219.7 s）与定向
+`-race` 通过；`go test ./... -run '^$'` 编译检查通过。诊断脚手架（阶段计时、并行度
+探针、临时基准）已全部移除。
+
+**遗留**：in-cluster n=96 catalog 验证（~26 s）仍高于隔离基准外推（~9-13 s），差距
+指向恢复供料/多进程争用而非本批瓶颈（子群批检已从每 component 194 次降为 1 次）。
+
+## 2026-08-23 dealer/receiver recovery 热路径解耦（本地代码验证，AWS `$0`）
+
+本轮先处理实现层的恢复供料瓶颈，协议 wire、APDB 阈值、dealer payload 认证和 Merkle
+root 校验均未改变：
+
+- inbox `dispatch` 对 `APDBRecoverGet` 和完整 payload response 只做轻量入队；hints 生成、
+  response canonical encode、payload decode/root re-encode 都移到独立的有界 recovery worker
+  pool，不再阻塞同一服务的控制消息、candidate relay 或签名处理。
+- dealer 在 `PublishComponent` 缓存 payload 后立即预排一个 response-preparation job；首次
+  请求只等待该 job 的完成，后续请求复用同一份完整 `payload+hints` response wire，避免每个
+  receiver 重复 encode/copy。`RLADKR_APDB_PAYLOAD_HINTS=0` 仍只关闭 hints，保留单 payload
+  response 和相同 root 校验。
+- recovery worker 默认按委员会规模取 `max(2, committee/16)`，上限 16；可用
+  `RLADKR_APDB_RECOVERY_WORKERS=4|8|12|16` 做 A/B。该旋钮只控制请求/响应重活，不改变
+  `RLADKR_COMPONENT_RECOVERY_WORKERS` 的 payload recovery fanout。
+- 新增 `E2E_BENCH_RESULT` profile：`mean_dealer_hint_build_ms`、
+  `mean_dealer_response_encode_ms`、`mean_receiver_payload_validation_ms`、
+  `mean_recovery_queue_wait_ms` 和 `mean_recovery_worker_ms`。其中 queue wait 是入队到
+  worker 开始的等待，worker 是实际处理墙钟；不能把多条并发 recovery latency 相加当成端到端
+  延迟。
+
+本地验证：`go test ./core ./cmd/rladkrbench` 定向 profile/metrics 测试通过；
+`go test -race ./core -run 'TestCV(APDB|Service|PayloadHints|ComponentPipeline)'` 通过。
+尚未 AWS 复测，因此不能声称 AWS latency 已改善。下面已完成本地固定-topology worker A/B；
+新增 AWS 成本 `$0`，累计量化成本不变。
+
+## 2026-08-23 本地 recovery workers 4/8/12/16 A/B（n=64/n=96）
+
+在同一台 224-vCPU EPYC 主机上顺序运行八个严格 loopback TCP epoch。每个规模内部固定端口布局、
+全量 listener barrier、smoke sampling、`GOMAXPROCS=4`、leaf verify workers=4、component
+recovery workers=8，只改变 `RLADKR_APDB_RECOVERY_WORKERS`。每 500 ms 从 `/proc` 口径采样
+全部 `rladkrbench` 的 RSS，并以 `GODEBUG=gctrace=1` 记录每进程 GC。每档只有一个 epoch，适合
+选择并发上限，不作为论文统计样本。
+
+| n | APDB workers | 完成 | adjusted E2E 均值 | queue wait 均值 | worker wall 均值 | sent/recv 每节点 | 簇峰值 RSS | GC live peak 均值/最大 |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 64 | 4 | 63/64 | 18.99 s | 139.73 ms | 1489.83 ms | 30.93/26.95 MB* | 13.02 GiB | 290/600 MB |
+| 64 | **8** | **64/64** | **17.64 s** | 135.45 ms | 1296.33 ms | 31.13/31.11 MB | 11.23 GiB | 287/412 MB |
+| 64 | 12 | 62/64 | 18.03 s | 115.66 ms | 1353.54 ms | 30.76/31.56 MB* | 12.48 GiB | 288/437 MB |
+| 64 | 16 | 63/64 | 17.33 s | 89.26 ms | 1219.52 ms | 29.58/27.09 MB* | 9.00 GiB | 278/438 MB |
+| 96 | 4 | 96/96 | 43.05 s | 84.27 ms | 2080.69 ms | 43.96/43.95 MB | 19.25 GiB | 406/686 MB |
+| 96 | 8 | 96/96 | 42.47 s | 73.34 ms | 2180.46 ms | 44.46/44.45 MB | 19.67 GiB | 405/703 MB |
+| 96 | **12** | **96/96** | **42.05 s** | **57.56 ms** | 2121.65 ms | 42.71/42.69 MB | 19.72 GiB | 408/696 MB |
+| 96 | 16 | 95/96 | 45.74 s | 70.29 ms | 2408.77 ms | 43.50/39.28 MB* | 24.67 GiB | 427/780 MB |
+
+`*` 表示 settle 窗口内有节点未完成，recv 均值受结果集合截断，不能解释为通信优化。其余完整轮的
+每节点通信差异约 4%，worker 数不改变 wire 或阈值，差异来自候选到达/中继调度和单轮噪声。
+GC 每节点平均次数在 n=64 为 36.0--41.8、n=96 为 40.4--51.7；平均累计 GC clock 分别仅
+192--208 ms 和 313--373 ms，没有 GC 成为端到端主瓶颈的证据。500-ms RSS 可能漏掉短峰，故同时
+给出 gctrace live heap；两种口径都显示 n=96/w16 的内存压力最高。
+
+结论：保留现有规模自适应默认值。service 以 old+new committee 总数计算，恰好得到 n=64 的
+8 workers 和 n=96 的 12 workers；前者是 n=64 唯一 all-success 档，后者是 n=96 all-success
+档中 E2E 最低且 queue wait 最低。固定 16 没有收益：n=96 慢 3.69 s、丢一个尾节点，并将簇峰值
+RSS 提高约 25%。原始产物在 `/tmp/arladkr-recovery-workers-ab-20260823/`，包含每节点日志、
+`cluster-results.log`、runner summary 和 RSS CSV。
+
+## 2026-08-23 本地 n=128 严格 TCP smoke 与 AWS 条件预测
+
+使用 `n=128,f=42`、严格 loopback TCP、全量 listener barrier、smoke proposer/validator sample=3、
+`GOMAXPROCS=4`、leaf verify workers=4、component recovery workers=8 和规模默认 APDB recovery
+workers=16 运行一个 epoch。本机 224 个逻辑 CPU 承载 `128*4=512` 个 Go 执行槽，约 2.29 倍超配；
+因此本轮用于功能、完成率和阶段归因，不直接代表一机一节点 AWS latency。
+
+| 指标 | 本地 n=128 结果 |
+| --- | ---: |
+| 完成 / quorum / 共识 | `127/128` / `86` 达成 / 单一 hash |
+| adjusted E2E 均值 | `92515.56 ms` |
+| setup / leaf build | `4833.21 / 10074.78 ms` |
+| candidate formation / proposer slots | `67679.17 / 67425.80 ms` |
+| 实际 proposer catalog verify | `54133--57133 ms`（4 个节点非零） |
+| aggregate agreement | `3499.23 ms` |
+| recover shard / receipt | `15449.10 / 415.56 ms`（recover 含约 10 s service grace） |
+| recovery queue wait / worker wall | `51.73 / 3568.82 ms` |
+| sent/recv 每成功节点 | `51.27 / 46.01 MB`* |
+| 簇峰值 RSS / 单进程采样峰值 | `52.33 GiB / 1464.7 MiB` |
+| GC live peak 均值/最大 | `576 / 1120 MB` |
+
+`*` recv 均值缺少 settle 窗口内未完成的 node 69。该节点在结果清理时仍处于共享主机重负载下的
+GC/计算尾部，没有协议错误行；不能把 `127/128` 解释为 Byzantine 或共识分叉。每节点 GC clock
+累计均值约 `0.77 s`，不是 92 秒的主因。原始产物为
+`/tmp/arladkr-n128-local-w16-20260823/`，runner/RSS 文件在同名前缀 `/tmp` 路径。
+
+**AWS 预测边界（不是实测）。** 私网假设 128 台 `c7g.xlarge`、`us-east-1` 同 AZ、全量 ready 后
+启动；公网假设 `us-east-1:64 + eu-west-1:64`、公网地址、无 netem、全部 Spot 保持存活。当前本地
+smoke 与 n=128 隔离 catalog 门控基准支持以下工程预算：
+
+| profile | AWS 私网预期 adjusted E2E | AWS 公网两区预期 | 每节点协议字节预期 | 可信度 |
+| --- | ---: | ---: | ---: | --- |
+| smoke (3/3) | `40--65 s` | 健康 MVBA 下 `120--300 s` | `50--65 MB` | 私网中；公网低 |
+| original (proposer=19, validator=85) | `70--120 s` | `300--900 s`，有超时风险 | `0.5--1.0 GB` | 低，需 n64/n96 正式档校准 |
+
+私网下 catalog 从共享主机的 54--57 s 回落到隔离的约 20--35 s 是主要收益；ARM 单核较 EPYC 慢，
+故没有直接使用 x86 隔离基准的 12--22 s。公网范围刻意较宽：历史 n=32 美爱公网轮曾在 MVBA
+aggregate agreement 放大到约 286 s，而同轮 candidate 仅约 4.6 s；在该 WAN 回归被当前代码于
+n=32/n=64 重新证明消失前，不能对 n=128 公网给出窄区间或承诺完成。正式 original 的精确参数为
+proposer 19、validator 85、VCert threshold 43；n=64 original 已显示通信比 smoke 高数倍，因此
+不能用本轮 51 MB 外推正式公网成本。建议先做 n=128 私网 smoke，再做 n=64/n=96 公网 original，
+最后才启动 n=128 公网 original。
+
+## proposer 分工互验证书：协议层设计（待安全评审和小规模实验）
+
+目标是在保持 component payload、Pool、ARC 和 VCert 绑定不变的前提下，避免每个 sampled
+proposer 独立验证完整 `L=n-f` 个 component。该设计不是本轮代码实现，不能计入当前 latency
+结果。
+
+**责任分区。** eligibility coin `E` 经无放回 PRF 派生一个确定的责任表：对每个 component
+`d`，生成至少 `2f+1` 个候选 verifier，并以 `H(domain,E,context,d,verifier)` 排序取前项。
+每个 verifier 只验证自己责任窗口内的 component；责任表、版本和窗口摘要写入 transcript。
+proposer sample 仅负责发起 candidate，不承担完整覆盖证明。由于正式 original profile 的
+n=96/n=128 proposer sample 只有 18/19，而 `f+1` 是 32/43，不能把背书集合错误地限制为
+proposer sample。
+
+**分片验证记录。** verifier 对每个 component 产生
+`ComponentCheck(component_ref_digest, payload_digest, leaf_digest, verifier, E, epoch, version,
+result)`，签名域为 `CV-V2-PROPOSER-CHECK-v1`。记录必须绑定 component ref 的完整 lock/root、
+payload digest、receiver/validator registry digest、责任窗口和验证结果；不能只签 component
+序号或 proposer ID。相同 component 的冲突结果按签名集合保留并使该 component 不可背书。
+
+**背书证书。** 每个责任分区达到 `f+1` 个不同 verifier 的有效检查后，形成
+`ComponentEndorsementCertificate`，包括 canonical responsibility digest、component check
+摘要列表、signer bitmap/签名聚合和 transcript digest。proposer 只接受覆盖全部 selected
+component 的证书集合，并把其 digest 放入 Pool/VCert statement；任一 component 缺证书、
+责任表不一致、registry/context 不一致或聚合签名无效都拒绝 candidate。
+
+**活性。** 仅 `f+1` 个固定 verifier 会被 Byzantine withholding 破坏，因此发送集合必须先取
+`2f+1` 候选并允许在超时后按同一 `E` 派生的下一窗口扩展；证书门槛仍为 `f+1`。扩展次数和
+失败概率写入 sampling report，并与 proposer/validator sampling union bound 分开计算。不能
+通过“收到任意 f+1 个签名”掩盖责任覆盖不足。
+
+**安全边界和迁移。** 先实现 verifier 责任表/证书 codec、签名域、覆盖检查和 Byzantine
+withholding/冲突测试，再接入 candidate；旧路径保留为 feature flag fallback。必须完成
+soundness/liveness 证明、重放/跨 epoch/跨 context 拒绝测试、多 proposer 共用证书测试后，
+才允许进入 AWS A/B。预期收益为 proposer catalog 验证关键路径约除以分区并发数，当前证据
+支持的端到端目标约 `32--36 s`；文档中的 `28--32 s` 仍是叠加实现优化后的乐观上限。
+
+## 2026-08-23 PracticalADKR 本地 n=64 ordinary/high-assurance 严格 TCP 对照
+
+用户口述的 `high-assumption` 在代码中没有对应 profile，本节按实际存在的
+`high-assurance` 执行。两轮均为 `n=64,f=21`、严格 loopback TCP、单 epoch、
+Paillier-3072、`fallback-policy=off`、`PRACTICAL_DXT_FAST_LOCAL_ACKS=0`、
+`PRACTICAL_DEALING_DELTA_MS=1000`、`PRACTICAL_DERIVE_WAIT_ALL_MS=0`、每节点 3 核
+affinity；二进制 sha256 为 `71960756e6705dd5e1badf275b8411fbd4b561553f29e54907dfef58c03aeb3f`。
+两轮唯一的协议参数差异是 `kappa-profile`。每档只跑一轮，以下分位数来自同一轮已完成节点，
+用于功能和瓶颈定位，不是论文统计样本。
+
+| profile | 实际 kappa / 安全预算 | 完成 / quorum / 共识 | E2E mean / median / p95 | online median | derive median | sent/recv median 每节点 |
+| --- | --- | --- | ---: | ---: | ---: | ---: |
+| `practical-original` | `20`；epoch 35.41-bit；525600 epochs union-bound 16.41-bit | `54/64` / 43 达成 / 单一 hash | `81.85 / 78.32 / 92.07 s` | `40.71 s` | `4.12 s` | `153.75/153.72 MB` |
+| `high-assurance` | `22=f+1`；确定性 honest inclusion（failure 0） | `63/64` / 43 达成 / 单一 hash | `190.34 / 190.36 / 190.91 s` | `153.59 s` | `116.26 s` | `155.67/154.66 MB` |
+
+两档 setup median 接近（`37.62 s` 与 `36.82 s`），MVBA median 也接近（`29.43 s` 与
+`29.48 s`）；high-assurance 的主要放大集中在 derive。partial verify median 从 `1.96 s`
+升至 `2.14 s`，recover 从 `4.57 s` 升至 `5.05 s`，均无法解释约 112.9 秒的 online 差值。
+通信量只增加约 1%，因此不是网络字节主导。
+
+代码没有 high-assurance 专用 derive 分支；两档都走 `runCompKeyDerivationMulticast`。
+该路径先扫描 selected transcripts，缺少 receiver ACK aux 时执行 3072-bit Paillier 解密，随后
+43 份 CompProve share 的逐份验证又各自扫描 selected transcripts。`kappa=22` 相对 20 的
+理论线性增量只有 10%，不能单独解释本轮约 28 倍的 derive median；当前最值得验证的假设是新增
+selected transcript 的 ACK 覆盖较差，触发了更多昂贵的 Paillier fallback，并被 64 进程同时
+计算放大。现有结果没有记录 `ack-hit/paillier-decrypt` 数量，故这只是待 profile 假设，不能写成
+已证明根因。下一次无需重复完整 A/B，先在 CompProve 增加 ACK hit、Paillier decrypt count/time、
+share verify count/time，再跑单轮 targeted profile 即可。
+
+完成率按停止时已产生 `E2E_BENCH_RESULT` 的节点计算；成功节点在 service grace 后退出，尾节点
+可能失去 peer，因此没有等待它们耗尽 600 秒 timeout。第一次 ordinary 预跑误设
+`--mem-per-node-mb=3072`，该参数实施的是 `RLIMIT_AS` 而非 RSS 限制，导致实际 RSS 仅几十 MiB
+时出现 mmap/pthread OOM，整轮作废；取消虚拟地址空间上限后无同类错误。本轮没有启动 AWS 资源，
+新增成本 `$0`，累计 AWS 成本不变。有效产物为
+`/tmp/practical-n64-original-r2-20260823/` 和
+`/tmp/practical-n64-high-assurance-20260823/`。
+
+## 本地 n=128 original setup 启动诊断与处理建议（2026-08-23）
+
+本地 TCP `n=128,f=42` 使用论文 original sampling `c_prop/c_val/q_val=19/85/43` 时，
+128 个节点日志都只写入一行 `WARMUP`，没有 `E2E_BENCH_RESULT`、`EPOCH_RUN_ERROR`、panic
+或 timeout。运行约 11 分钟后主动停止，未产生可用 E2E 数据。
+
+这不是已证实的 OOM：运行期间进程 RSS 峰值约 `153 GiB`，机器仍约 `118 GiB` 可用内存，swap
+为 0，未发现 OOM killer 或 cgroup kill 记录。`WARMUP` 是 benchmark 在 `--start-at` 前打印的
+第一行，不代表进程一直停留在 sleep；warmup 后每个进程会进入 `PrepareConfigRuntime`，在
+`RunEpoch` 前加载并验证完整 n=128 receiver/validator registry 和 threshold key bundle。
+128 个进程同时重复该 setup，形成 CPU/内存并发启动风暴，最可能导致进程长期未完成 setup，
+而不是 ARC、VCert 或 validator 协议阶段失败。
+
+setup 不是本实验主要指标，后续应采用以下处理口径：
+
+1. 将 CV V2 key bundle 作为预生成、带 digest 校验的实验输入；不要在每个 benchmark epoch
+   重新生成 key material。
+2. 将 `PrepareConfigRuntime` 作为 setup 阶段单独计时并从 E2E 中排除；协议进程只在 setup
+   完成后进入统一 start barrier。
+3. 本机 n=128 不要 128 路同时做 setup。先分批预热（建议 16--32 个进程一批），或为每个
+   进程设置 staggered setup，再统一等待 `n-f` 个 listener/epoch markers 后启动协议。
+4. 不要用 `-precompute-runtime=false` 作为性能修复；这只是把同样的加载成本移入协议计时，
+   会污染 E2E。若需要快速 smoke，只能明确标注为 setup-inclusive smoke。
+5. AWS 一节点一进程时，setup 并发压力通常会分散到多台机器；仍应保留 bundle digest、
+   setup-complete 时间和 listener-ready 时间，避免把 setup 卡住误判为协议性能异常。
+
+本次失败不应填写 n=128 的延迟、通信量或 ARC communication share；追踪结果保留为
+`0/128`、无有效 E2E，直到采用分批/预热方案重新运行。
+
+### 修复实施状态（2026-08-23）
+
+已在本地 runner 和 benchmark 入口实施 setup/协议解耦：
+
+- `rladkrbench` 现在先执行 `PrepareConfigRuntime`，写入 `RLADKR_SETUP_READY_DIR/node-*.ready`，再等待 `--start-at` 并进入 `RunEpoch`；setup 不再与统一协议起点同时发生。
+- `scripts/run_cv_cluster.sh` 默认按 16 个节点一批启动，等待整批 setup-ready marker 后再启动下一批；`n>=96` 默认预留 600 秒 start window，`RLADKR_CV_SETUP_BATCH_SIZE` 和 `RLADKR_CV_SETUP_READY_TIMEOUT` 可调。
+- setup marker 只表示本地 runtime/key material 已准备完成，不改变协议 quorum，也不计入 E2E - setup。正式结果仍由 `E2E_BENCH_RESULT` 和 epoch barrier 校验。
+- n=4 回归运行通过：4/4 成功、quorum 3、单一 consensus hash；说明新启动顺序不会破坏协议流程。
+
+这相当于跳过 setup 对协议性能的影响，而不是跳过安全校验：key bundle 仍通过 digest 和 registry 校验，`PrepareConfigRuntime` 仍然执行，只是被提前并按批次摊平。下一次 n=128 original 应使用默认 batch=16，并保证 runner 总超时覆盖 setup window + epoch timeout，例如：
+
+```bash
+RLADKR_CV_FAILURE_TARGET=original \
+RLADKR_CV_SETUP_BATCH_SIZE=16 \
+RLADKR_CV_SETUP_READY_TIMEOUT=900s \
+RLADKR_CV_EPOCH_TIMEOUT=900s \
+RLADKR_CV_RUNNER_TIMEOUT=1800s \
+bash scripts/run_cv_cluster.sh 128 42 /tmp/arladkr-n128-original-batched 25000
+```
+
+若 setup 仍超过窗口，可将 `RLADKR_CV_SETUP_BATCH_SIZE=8`；不应改用 `-precompute-runtime=false`。
+
+## Candidate fanout 通信审查与后续优化（2026-08-23）
+
+### 结论先行
+
+本地 n=64 original 结果中，每节点 `total sent/recv` 为 `232.76/212.94 MB`，这些总计、
+`recovery sent/recv` 和 ARC share 的数值计算没有错误。此前把
+`mean_candidate_formation_sent_bytes=204.23 MB` 直接解释成 candidate fanout 是归因错误：
+该字段来自全局 `commPhase`，多个 proposer slot 并发运行时，aggregate APDB、proposer/
+validator recovery 等流量会混入 candidate formation phase。
+
+按 `CV_V2_CERTIFIED_CANDIDATE` tag 重新归因，candidate relay 实际约为每节点发送 `2.16 MB`、
+接收 `1.74 MB`；单个 agreement object wire 约 `21.95 KB`。平均 fanout attempt 为 `96.9`，
+其中 retry `39.2`，约 `40.5%`。因此 candidate fanout 不是 n=64 总通信量的主要来源，但存在
+明显的重复传播和 ACK 延迟放大。
+
+### 代码审查结果
+
+1. **全量 fanout 加全量 relay 会形成 flooding。** proposer 在
+   `core/cv_sapvss_candidate_network_v2.go:247-292` 向完整 `OldRoster` 发送；每个接收并接受
+   candidate 的节点又在 `:493-511` 向除发送者外的完整 roster relay。digest cache 只能避免
+   重复验证，不能避免重复 payload 已经在线路上传输。
+2. **ACK 走共享单 worker 队列。** 接收 candidate 后 ACK 在 `:455-462` 通过 `sendAsync` 入队，
+   但 `core/cv_sapvss_apdb_network_v2.go:597-608` 只有一个 outbound worker 串行发送。在
+   aggregate/recovery 流量拥塞时，candidate 已送达而 ACK 尚未发出，会触发完整 candidate
+   重复发送。
+3. **phase byte counter 不是互斥分解。** `setCommPhase` 是 runtime 级全局状态，且 proposer
+   slot 并发执行；因此 phase counter 只能用于时间窗口定位，不能替代 tag 级通信统计。
+
+### 优化顺序
+
+1. 增加 `direct-only` feature flag，先保留 proposer 到全 roster 的一次发送，关闭接收后的
+   再 relay，验证完成率、candidate tag bytes 和 retry 是否下降。这是安全语义变化最小的
+   A/B。
+2. 为 candidate ACK 增加优先级队列或专用 ACK writer，避免 ACK 排在大 payload 后面。该项
+   比单纯修改 retry delay 更可能减少重复字节。
+3. 若 direct-only 仍需故障传播，再实现 deterministic dissemination tree：每个节点只向
+   预定 child 转发，并设置备用 parent；禁止全 roster flooding。
+4. 评估 validator-sample + digest/pull：先传播 digest/header，validator sample 获取完整
+   candidate，其他节点按需拉取。不能直接把目标集合改为 validator sample，因为当前
+   `cvVerifyAgreementObjectV2` 要求完整 pool/component refs 可用。
+5. 最后再做 pool catalog 缓存、digest 引用和紧凑编码。当前 agreement object 只有约 22 KB，
+   这些优化收益低于消除 relay 和 ACK 阻塞。
+
+`RLADKR_CANDIDATE_FANOUT_PARALLEL` 只改变并发度，不直接减少字节；在 ACK 队列未优化前盲目
+增大并发可能增加拥塞和 retry。后续 AWS 实验必须同时记录 tag 级 candidate bytes、attempts、
+retries、ACK wait、direct/relay mode 和完成率，不能只依赖 `mean_candidate_formation_*`。
+
+### 本地新机器验证结果（32 vCPU / 39 GiB，2026-08-23）
+
+代码已加入 `RLADKR_CANDIDATE_FANOUT_MODE`：`flood`（兼容旧行为）、`direct-only`（源节点
+全量发送、接收节点不 relay）和 `tree`（按 candidate proposer 为根的确定性二叉传播树）。ACK
+已移入独立 priority outbound queue；candidate tag bytes 与混合 phase counter 也已分离，输出
+`mean_candidate_formation_*`（tag-accurate）和 `mean_candidate_phase_counter_*`（原始窗口计数）。
+
+本机 n=32 original（`f=10, c_prop/c_val/q_val=11/21/11`）进行了两档快速验证：
+
+| 模式 | 结果 | 观察 |
+| --- | --- | --- |
+| `direct-only` | 无有效 E2E；节点最终 `quitpd`/MVBA deadline | 关闭 relay 后，当前 MVBA/候选可用性假设未满足；不能直接设为默认 |
+| `tree` | 产生部分结果后停止；多节点在 decision finalization 仅收到 `19/22` shares | 树传播减少冗余但当前决策阶段仍需要完整节点可达性；不能视为成功基准 |
+
+两轮都没有 OOM，测试目录和进程已清理。失败说明 direct-only/tree 不能只改 fanout 目标，
+必须同时实现 digest/header 广播、authenticated pull 或 MVBA value fetch，确保未直接收到完整
+candidate 的节点仍能参与 predicate 和 decision-share 阶段。
+
+### validator-sample + pull / pool catalog 评估
+
+当前 `cvVerifyAgreementObjectV2` 会验证完整 pool 中的每个 component ref、pool certificate、
+VCert 和 ARC；直接把 candidate fanout 限制为 validator sample 会让其他节点缺少 MVBA predicate
+所需的完整 object。因此本轮没有启用不完整的 validator-only 路径。
+
+推荐的后续协议改造是：先传播 candidate digest/header，validator sample 验证完整 object；其余
+节点通过带 digest、origin 和 proof 的 pull 获取完整 candidate，收到后再进入 predicate。pool
+catalog 可以按 `pool digest` 缓存并按需拉取缺失 component refs，但必须保留 pool digest 和
+certificate 的绑定验证。当前只做缓存不会减少线上的首次 payload，收益低于 relay/tree 和 ACK
+优先级优化，暂不作为默认改动。

@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -90,6 +91,22 @@ type cvCryptoJobV2 struct {
 	msg  Message
 }
 
+type cvRecoveryJobKindV2 uint8
+
+const (
+	cvRecoveryPrepareDealerV2 cvRecoveryJobKindV2 = iota + 1
+	cvRecoveryDealerRequestV2
+	cvRecoveryPayloadResponseV2
+)
+
+type cvRecoveryJobV2 struct {
+	kind           cvRecoveryJobKindV2
+	msg            Message
+	instanceDigest []byte
+	payload        []byte
+	queuedAt       time.Time
+}
+
 type cvServiceExperimentMetricsV2 struct {
 	proposerRecoverySentBytes           uint64
 	proposerRecoveryRecvBytes           uint64
@@ -126,6 +143,12 @@ type cvServiceExperimentMetricsV2 struct {
 	candidateFanoutMaxPeerLatency       time.Duration
 	candidateFanoutAttempts             int
 	candidateFanoutRetries              int
+	dealerHintBuildLatency              time.Duration
+	dealerResponseEncodeLatency         time.Duration
+	receiverPayloadDecodeLatency        time.Duration
+	recoveryQueueWaitLatency            time.Duration
+	recoveryWorkerLatency               time.Duration
+	recoveryJobs                        uint64
 	tagSentBytes                        map[string]uint64
 	tagRecvBytes                        map[string]uint64
 }
@@ -253,9 +276,12 @@ type cvAPDBNetworkServiceV2 struct {
 	candidateFanoutV2       map[string]*cvCandidateFanoutStateV2
 	certifiedCandidateChV2  chan *cvAgreementObjectV2
 	outbound                chan cvOutboundMessageV2
+	priorityOutbound        chan cvOutboundMessageV2
 	outboundWG              sync.WaitGroup
 	cryptoQueue             chan cvCryptoJobV2
 	cryptoWG                sync.WaitGroup
+	recoveryQueue           chan cvRecoveryJobV2
+	recoveryWG              sync.WaitGroup
 	processingLaneOffersV2  map[[2]int]struct{}
 	processingCandidatesV2  map[string]struct{}
 	experimentMetrics       cvServiceExperimentMetricsV2
@@ -354,7 +380,9 @@ func newCVAPDBNetworkServiceV2(
 		candidateFanoutV2:      make(map[string]*cvCandidateFanoutStateV2),
 		certifiedCandidateChV2: make(chan *cvAgreementObjectV2, cfg.Params.proposerSampleSize),
 		outbound:               make(chan cvOutboundMessageV2, cvOutboundQueueCapacityV2(len(cfg.OldRoster)+len(cfg.NewRoster))),
+		priorityOutbound:       make(chan cvOutboundMessageV2, cvPriorityOutboundQueueCapacityV2(len(cfg.OldRoster)+len(cfg.NewRoster))),
 		cryptoQueue:            make(chan cvCryptoJobV2, cvCryptoQueueCapacityV2(len(cfg.OldRoster)+len(cfg.NewRoster))),
+		recoveryQueue:          make(chan cvRecoveryJobV2, cvRecoveryQueueCapacityV2(len(cfg.OldRoster)+len(cfg.NewRoster))),
 		processingLaneOffersV2: make(map[[2]int]struct{}, len(cfg.OldRoster)),
 		processingCandidatesV2: make(map[string]struct{}, cfg.Params.proposerSampleSize),
 		experimentMetrics: cvServiceExperimentMetricsV2{
@@ -387,6 +415,11 @@ func newCVAPDBNetworkServiceV2(
 	for range cryptoWorkers {
 		go service.runCryptoWorkerV2()
 	}
+	recoveryWorkers := cvRecoveryServiceWorkers(len(cfg.OldRoster) + len(cfg.NewRoster))
+	service.recoveryWG.Add(recoveryWorkers)
+	for range recoveryWorkers {
+		go service.runRecoveryWorkerV2()
+	}
 	go service.run()
 	return service, nil
 }
@@ -402,6 +435,17 @@ func cvOutboundQueueCapacityV2(committeeSize int) int {
 	return capacity
 }
 
+func cvPriorityOutboundQueueCapacityV2(committeeSize int) int {
+	capacity := committeeSize * 8
+	if capacity < 64 {
+		return 64
+	}
+	if capacity > 1024 {
+		return 1024
+	}
+	return capacity
+}
+
 func cvCryptoQueueCapacityV2(committeeSize int) int {
 	capacity := committeeSize * 2
 	if capacity < 64 {
@@ -413,6 +457,31 @@ func cvCryptoQueueCapacityV2(committeeSize int) int {
 	return capacity
 }
 
+func cvRecoveryQueueCapacityV2(committeeSize int) int {
+	capacity := committeeSize * 4
+	if capacity < 64 {
+		capacity = 64
+	}
+	if capacity > 1024 {
+		capacity = 1024
+	}
+	return capacity
+}
+
+func cvRecoveryServiceWorkers(committeeSize int) int {
+	workers := committeeSize / 16
+	if workers < 2 {
+		workers = 2
+	}
+	if configured, err := strconv.Atoi(strings.TrimSpace(os.Getenv("RLADKR_APDB_RECOVERY_WORKERS"))); err == nil && configured > 0 {
+		workers = configured
+	}
+	if workers > 16 {
+		workers = 16
+	}
+	return workers
+}
+
 func (s *cvAPDBNetworkServiceV2) runCryptoWorkerV2() {
 	defer s.cryptoWG.Done()
 	for {
@@ -422,6 +491,80 @@ func (s *cvAPDBNetworkServiceV2) runCryptoWorkerV2() {
 		case job := <-s.cryptoQueue:
 			s.runCryptoJobV2(job)
 		}
+	}
+}
+
+func (s *cvAPDBNetworkServiceV2) runRecoveryWorkerV2() {
+	defer s.recoveryWG.Done()
+	for {
+		select {
+		case <-s.ctx.Done():
+			return
+		case job := <-s.recoveryQueue:
+			started := time.Now()
+			s.runRecoveryJobV2(job)
+			s.experimentMu.Lock()
+			s.experimentMetrics.recoveryJobs++
+			s.experimentMetrics.recoveryWorkerLatency += time.Since(started)
+			if !job.queuedAt.IsZero() {
+				s.experimentMetrics.recoveryQueueWaitLatency += started.Sub(job.queuedAt)
+			}
+			s.experimentMu.Unlock()
+		}
+	}
+}
+
+func (s *cvAPDBNetworkServiceV2) enqueueRecoveryJobV2(job cvRecoveryJobV2) bool {
+	if job.queuedAt.IsZero() {
+		job.queuedAt = time.Now()
+	}
+	select {
+	case <-s.ctx.Done():
+		return false
+	case s.recoveryQueue <- job:
+		return true
+	}
+}
+
+func (s *cvAPDBNetworkServiceV2) runRecoveryJobV2(job cvRecoveryJobV2) {
+	switch job.kind {
+	case cvRecoveryPrepareDealerV2:
+		if len(job.instanceDigest) == 32 && len(job.payload) > 0 {
+			_ = s.dealerPayloadResponseV2(job.instanceDigest, job.payload)
+		}
+	case cvRecoveryDealerRequestV2:
+		lock, err := cvDecodeAPDBLockV2(job.msg.Body)
+		if err != nil {
+			return
+		}
+		if payload, ok := s.dealerPayloadV2(lock.InstanceDigest); ok {
+			if response := s.dealerPayloadResponseV2(lock.InstanceDigest, payload); len(response) > 0 {
+				_ = s.sendAsync(job.msg.From, cvTagAPDBRecoverPayloadV2, response, nil)
+				return
+			}
+		}
+		response, err := cvHandleAPDBRecoveryRequestV2(s.cfg.SID, s.cfg.Epoch, job.msg.From, s.cfg.LocalNode,
+			s.cfg.OldRoster, job.msg.Body, s.cfg.TotalShards, s.cfg.ShardBytes, s.holderStore, s.apdbSigner)
+		if err == nil {
+			_ = s.sendAsync(job.msg.From, cvTagAPDBRecoverStoreV2, response, nil)
+		}
+	case cvRecoveryPayloadResponseV2:
+		started := time.Now()
+		response, err := cvDecodeAPDBPayloadResponseV2(job.msg.Body, s.cfg.MaximumPayload)
+		if err != nil {
+			return
+		}
+		pending := s.lookupRecovery(string(response.InstanceDigest), false)
+		if pending == nil {
+			return
+		}
+		s.recordRecoveryBytesV2(pending.purpose, false, job.msg.WireBytes)
+		if complete, addErr := pending.collector.AddPayload(job.msg.From, job.msg.Body); addErr == nil && complete {
+			cvNotifyAPDBV2(pending.ready)
+		}
+		s.experimentMu.Lock()
+		s.experimentMetrics.receiverPayloadDecodeLatency += time.Since(started)
+		s.experimentMu.Unlock()
 	}
 }
 
@@ -467,9 +610,26 @@ func (s *cvAPDBNetworkServiceV2) enqueueLaneOfferV2(msg Message) {
 func (s *cvAPDBNetworkServiceV2) runOutbound() {
 	defer s.outboundWG.Done()
 	for {
+		// Drain control replies first. Candidate ACKs are intentionally kept
+		// separate from bulk recovery/candidate traffic so delivery confirmation
+		// cannot be delayed behind large payload writes.
+		select {
+		case message := <-s.priorityOutbound:
+			err := s.send(message.to, message.tag, message.payload)
+			if message.onResult != nil {
+				message.onResult(err)
+			}
+			continue
+		default:
+		}
 		select {
 		case <-s.ctx.Done():
 			return
+		case message := <-s.priorityOutbound:
+			err := s.send(message.to, message.tag, message.payload)
+			if message.onResult != nil {
+				message.onResult(err)
+			}
 		case message := <-s.outbound:
 			err := s.send(message.to, message.tag, message.payload)
 			if message.onResult != nil {
@@ -490,6 +650,19 @@ func (s *cvAPDBNetworkServiceV2) sendAsync(to int, tag string, payload []byte, o
 	case <-s.ctx.Done():
 		return s.ctx.Err()
 	case s.outbound <- message:
+		return nil
+	}
+}
+
+func (s *cvAPDBNetworkServiceV2) sendPriorityAsync(to int, tag string, payload []byte, onResult func(error)) error {
+	if s == nil || s.ctx == nil || tag == "" || len(payload) == 0 {
+		return fmt.Errorf("invalid priority asynchronous CV V2 send")
+	}
+	message := cvOutboundMessageV2{to: to, tag: tag, payload: append([]byte(nil), payload...), onResult: onResult}
+	select {
+	case <-s.ctx.Done():
+		return s.ctx.Err()
+	case s.priorityOutbound <- message:
 		return nil
 	}
 }
@@ -1479,6 +1652,7 @@ func (s *cvAPDBNetworkServiceV2) Close() error {
 	<-s.done
 	s.outboundWG.Wait()
 	s.cryptoWG.Wait()
+	s.recoveryWG.Wait()
 	return nil
 }
 
@@ -1527,9 +1701,13 @@ func (s *cvAPDBNetworkServiceV2) lockForPurposeV2(
 	lockCtx, cancelFanout := context.WithCancel(ctx)
 	defer cancelFanout()
 	fanoutDone := make(chan []cvFanoutSendResultV2, 1)
+	storeTag := cvTagAPDBStoreV2
+	if aggregate {
+		storeTag = cvTagAggregateAPDBStoreV2
+	}
 	go func() {
 		results := s.sendRecipientPayloadFanoutContextMeasuredV2(
-			lockCtx, holders, cvTagAPDBStoreV2, offers,
+			lockCtx, holders, storeTag, offers,
 		)
 		for _, result := range results {
 			if result.err == nil {
@@ -2018,6 +2196,14 @@ func (s *cvAPDBNetworkServiceV2) cacheDealerPayloadV2(instanceDigest, payload []
 			s.dealerPayloadsV2[string(instanceDigest)] = append([]byte(nil), payload...)
 		}
 	}
+	if s.dealerPayloadHintStates == nil {
+		s.dealerPayloadHintStates = make(map[string]*cvDealerPayloadHintStateV2, 8)
+	}
+	if s.dealerPayloadHintStates[string(instanceDigest)] == nil {
+		s.dealerPayloadHintStates[string(instanceDigest)] = &cvDealerPayloadHintStateV2{ready: make(chan struct{})}
+	}
+	go s.enqueueRecoveryJobV2(cvRecoveryJobV2{kind: cvRecoveryPrepareDealerV2,
+		instanceDigest: append([]byte(nil), instanceDigest...), payload: append([]byte(nil), payload...)})
 }
 
 func (s *cvAPDBNetworkServiceV2) dealerPayloadV2(instanceDigest []byte) ([]byte, bool) {
@@ -2037,15 +2223,17 @@ func (s *cvAPDBNetworkServiceV2) dealerPayloadV2(instanceDigest []byte) ([]byte,
 // one cached dealer payload. Recording replays the exact consumer decode, so
 // it costs one full verification per component, once, off the request path.
 type cvDealerPayloadHintStateV2 struct {
-	once  sync.Once
-	hints []byte
+	once     sync.Once
+	ready    chan struct{}
+	hints    []byte
+	response []byte
 }
 
-// dealerPayloadHintsV2 returns the attachment for a cached payload, computing
-// it lazily on first request. A nil result (decode rejection or the env kill
-// switch) simply serves the legacy response.
-func (s *cvAPDBNetworkServiceV2) dealerPayloadHintsV2(instanceDigest, payload []byte) []byte {
-	if s == nil || len(instanceDigest) != 32 || len(payload) == 0 || !cvPayloadHintsEnabledV2() {
+// dealerPayloadResponseV2 returns a cached full-payload response, computing
+// hints and canonical encoding once per instance. A nil result means the
+// payload could not be encoded and callers may use the shard fallback.
+func (s *cvAPDBNetworkServiceV2) dealerPayloadResponseV2(instanceDigest, payload []byte) []byte {
+	if s == nil || len(instanceDigest) != 32 || len(payload) == 0 {
 		return nil
 	}
 	s.mu.Lock()
@@ -2054,41 +2242,62 @@ func (s *cvAPDBNetworkServiceV2) dealerPayloadHintsV2(instanceDigest, payload []
 	}
 	state := s.dealerPayloadHintStates[string(instanceDigest)]
 	if state == nil {
-		state = &cvDealerPayloadHintStateV2{}
+		state = &cvDealerPayloadHintStateV2{ready: make(chan struct{})}
 		s.dealerPayloadHintStates[string(instanceDigest)] = state
 	}
 	s.mu.Unlock()
 	state.once.Do(func() {
-		if s.cfg.LeafContext == nil || s.cfg.Receivers == nil || s.cfg.Validators == nil {
-			return
+		hintStarted := time.Now()
+		defer close(state.ready)
+		if cvPayloadHintsEnabledV2() && s.cfg.LeafContext != nil && s.cfg.Receivers != nil && s.cfg.Validators != nil {
+			state.hints = cvRecordLeafDeferredHintsV2(payload, s.cfg.LeafContext, s.cfg.Receivers, s.cfg.Validators)
 		}
-		state.hints = cvRecordLeafDeferredHintsV2(payload, s.cfg.LeafContext, s.cfg.Receivers, s.cfg.Validators)
 		if len(state.hints) > cvMaxPayloadHintsBytesV2(s.cfg.MaximumPayload) {
 			state.hints = nil
 		}
+		s.experimentMu.Lock()
+		s.experimentMetrics.dealerHintBuildLatency += time.Since(hintStarted)
+		s.experimentMu.Unlock()
+		encodeStarted := time.Now()
+		if response, err := cvAPDBPayloadResponseV2CanonicalBytes(&cvAPDBPayloadResponseV2{
+			InstanceDigest: instanceDigest, Payload: payload, Hints: state.hints,
+		}); err == nil {
+			state.response = response
+			s.experimentMu.Lock()
+			s.experimentMetrics.dealerResponseEncodeLatency += time.Since(encodeStarted)
+			s.experimentMu.Unlock()
+		}
 	})
-	return state.hints
+	<-state.ready
+	return state.response
 }
 
 func (s *cvAPDBNetworkServiceV2) dispatch(msg Message) {
 	s.recordTagBytesV2(msg.Tag, false, msg.WireBytes)
 	switch msg.Tag {
-	case cvTagAPDBStoreV2:
+	case cvTagAPDBStoreV2, cvTagAggregateAPDBStoreV2:
 		if s.holderStore == nil {
 			return
 		}
 		response, err := cvHandleAPDBStoreOfferV2(s.cfg.SID, s.cfg.Epoch, msg.From, s.cfg.LocalNode,
 			s.cfg.OldRoster, msg.Body, s.cfg.TotalShards, s.cfg.ShardBytes, s.holderStore, s.apdbSigner)
 		if err == nil {
-			_ = s.sendAsync(msg.From, cvTagAPDBStoredShareV2, response, nil)
+			responseTag := cvTagAPDBStoredShareV2
+			if msg.Tag == cvTagAggregateAPDBStoreV2 {
+				responseTag = cvTagAggregateARCShareV2
+			}
+			_ = s.sendAsync(msg.From, responseTag, response, nil)
 		}
-	case cvTagAPDBStoredShareV2:
+	case cvTagAPDBStoredShareV2, cvTagAggregateARCShareV2:
 		response, err := cvDecodeAPDBStoredShareV2(msg.Body)
 		if err != nil {
 			return
 		}
 		pending := s.lookupLock(string(response.InstanceDigest))
 		if pending != nil {
+			if pending.aggregate != (msg.Tag == cvTagAggregateARCShareV2) {
+				return
+			}
 			s.recordDispersalBytesV2(pending.aggregate, false, msg.WireBytes)
 			if complete, addErr := pending.collector.AddStoredShare(msg.From, msg.Body); addErr == nil && complete {
 				cvNotifyAPDBV2(pending.ready)
@@ -2098,42 +2307,9 @@ func (s *cvAPDBNetworkServiceV2) dispatch(msg Message) {
 		if s.holderStore == nil {
 			return
 		}
-		// The dealer of a component keeps its own locked payload and answers
-		// with one full-payload response, which the collector authenticates by
-		// deterministic re-encoding against the locked Merkle root. This
-		// removes the multi-holder shard burst for the common recovery path
-		// without changing thresholds or the shard fallback.
-		if lock, lockErr := cvDecodeAPDBLockV2(msg.Body); lockErr == nil {
-			if payload, cached := s.dealerPayloadV2(lock.InstanceDigest); cached {
-				response, payloadErr := cvAPDBPayloadResponseV2CanonicalBytes(
-					&cvAPDBPayloadResponseV2{
-						InstanceDigest: lock.InstanceDigest, Payload: payload,
-						Hints: s.dealerPayloadHintsV2(lock.InstanceDigest, payload),
-					},
-				)
-				if payloadErr == nil {
-					_ = s.sendAsync(msg.From, cvTagAPDBRecoverPayloadV2, response, nil)
-					return
-				}
-			}
-		}
-		response, err := cvHandleAPDBRecoveryRequestV2(s.cfg.SID, s.cfg.Epoch, msg.From, s.cfg.LocalNode,
-			s.cfg.OldRoster, msg.Body, s.cfg.TotalShards, s.cfg.ShardBytes, s.holderStore, s.apdbSigner)
-		if err == nil {
-			_ = s.sendAsync(msg.From, cvTagAPDBRecoverStoreV2, response, nil)
-		}
+		_ = s.enqueueRecoveryJobV2(cvRecoveryJobV2{kind: cvRecoveryDealerRequestV2, msg: msg})
 	case cvTagAPDBRecoverPayloadV2:
-		response, err := cvDecodeAPDBPayloadResponseV2(msg.Body, s.cfg.MaximumPayload)
-		if err != nil {
-			return
-		}
-		pending := s.lookupRecovery(string(response.InstanceDigest), false)
-		if pending != nil {
-			s.recordRecoveryBytesV2(pending.purpose, false, msg.WireBytes)
-			if complete, addErr := pending.collector.AddPayload(msg.From, msg.Body); addErr == nil && complete {
-				cvNotifyAPDBV2(pending.ready)
-			}
-		}
+		_ = s.enqueueRecoveryJobV2(cvRecoveryJobV2{kind: cvRecoveryPayloadResponseV2, msg: msg})
 	case cvTagAggregateRecoverGetV2:
 		if s.holderStore == nil {
 			return

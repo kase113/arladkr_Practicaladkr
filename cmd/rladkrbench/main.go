@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
 	"rladkr_go/core"
 	"sort"
 	"strconv"
@@ -94,6 +95,11 @@ type runStat struct {
 	cvProposerCatalogVerificationMs       float64
 	cvProposerCatalogScanCount            float64
 	cvProposerRejectedCount               float64
+	cvDealerHintBuildMs                   float64
+	cvDealerResponseEncodeMs              float64
+	cvReceiverPayloadValidationMs         float64
+	cvRecoveryQueueWaitMs                 float64
+	cvRecoveryWorkerMs                    float64
 	cvValidatorComponentRecoverySentBytes float64
 	cvValidatorComponentRecoveryRecvBytes float64
 	cvValidatorComponentRecoveryMs        float64
@@ -226,20 +232,6 @@ func main() {
 	}
 	if *epochs <= 0 {
 		*epochs = 1
-	}
-
-	// Distributed start barrier: wait until --start-at before proceeding.
-	// Peer processes then bind their listeners and wait for the old-committee
-	// n-f quorum before entering RunEpoch.
-	if *startAt > 0 {
-		now := time.Now().Unix()
-		if now < *startAt {
-			remaining := *startAt - now
-			fmt.Fprintf(os.Stderr, "WARMUP: waiting %ds for start-at unix=%d\n", remaining, *startAt)
-			for time.Now().Unix() < *startAt {
-				time.Sleep(100 * time.Millisecond)
-			}
-		}
 	}
 
 	old := make([]int, *n)
@@ -413,6 +405,26 @@ func main() {
 				}
 				cfg = preparedCfg
 			}
+			if setupDir := strings.TrimSpace(os.Getenv("RLADKR_SETUP_READY_DIR")); setupDir != "" {
+				if err := os.MkdirAll(setupDir, 0o700); err != nil {
+					fmt.Fprintf(os.Stderr, "EPOCH_SETUP_MARKER_ERROR err=%v\n", err)
+					runSuccess = false
+					break
+				}
+				marker := filepath.Join(setupDir, fmt.Sprintf("node-%06d.ready", localNodeIDs[0]))
+				if err := os.WriteFile(marker, []byte("ready\n"), 0o600); err != nil {
+					fmt.Fprintf(os.Stderr, "EPOCH_SETUP_MARKER_ERROR err=%v\n", err)
+					runSuccess = false
+					break
+				}
+			}
+			// Setup is deliberately completed before the distributed start barrier.
+			// This keeps setup CPU/RAM out of the synchronized protocol launch.
+			if *startAt > 0 {
+				for time.Now().Unix() < *startAt {
+					time.Sleep(100 * time.Millisecond)
+				}
+			}
 			traceBenchMain(localNodeIDs, "before_runepoch", fmt.Sprintf("run=%d epoch=%d", i+1, globalEpoch))
 			res, err := core.RunEpoch(ctx, cfg)
 			outerAttemptLatencyMs := float64(time.Since(totalStart).Microseconds()) / 1000.0
@@ -552,6 +564,11 @@ func main() {
 				cvProposerCatalogVerificationMs:       float64(res.CVProposerCatalogVerificationLatency.Microseconds()) / 1000.0,
 				cvProposerCatalogScanCount:            float64(res.CVProposerCatalogScanCount),
 				cvProposerRejectedCount:               float64(res.CVProposerRejectedComponentCount),
+				cvDealerHintBuildMs:                   float64(res.CVDealerHintBuildLatency.Microseconds()) / 1000.0,
+				cvDealerResponseEncodeMs:              float64(res.CVDealerResponseEncodeLatency.Microseconds()) / 1000.0,
+				cvReceiverPayloadValidationMs:         float64(res.CVReceiverPayloadValidationLatency.Microseconds()) / 1000.0,
+				cvRecoveryQueueWaitMs:                 float64(res.CVRecoveryQueueWaitLatency.Microseconds()) / 1000.0,
+				cvRecoveryWorkerMs:                    float64(res.CVRecoveryWorkerLatency.Microseconds()) / 1000.0,
 				cvValidatorComponentRecoverySentBytes: float64(res.CVValidatorComponentRecoverySentBytes),
 				cvValidatorComponentRecoveryRecvBytes: float64(res.CVValidatorComponentRecoveryRecvBytes),
 				cvValidatorComponentRecoveryMs:        float64(res.CVValidatorComponentRecoveryLatency.Microseconds()) / 1000.0,
@@ -1068,7 +1085,7 @@ func formatBenchResult(in benchResultInput) string {
 		in.cvSamplingUnionBound,
 	)
 	cvLine := line + fmt.Sprintf(
-		" mean_cv_component_count=%.0f mean_cv_arc_holder_count=%.0f mean_cv_recovered_shard_count=%.0f mean_cv_verified_receipt_count=%.0f leaf_build_ms=%.0f component_disperse_ms=%.0f candidate_formation_ms=%.0f eligibility_coin_ms=%.2f proposer_slots_ms=%.2f mean_coin_fanout_ms=%.2f mean_candidate_ack_wait_ms=%.2f mean_candidate_retry_wait_ms=%.2f mean_candidate_fanout_max_peer_ms=%.2f mean_candidate_fanout_attempts=%.0f mean_candidate_fanout_retries=%.0f aggregate_disperse_ms=%.0f aggregate_agreement_ms=%.0f mean_apvss_ack_count=%.2f mean_apvss_fallback_count=%.2f mean_apvss_proof_bytes=%.0f mean_apvss_leaf_wire_bytes=%.0f mean_completed_candidate_count=%.0f mean_pool_wire_bytes=%.0f mean_validation_request_wire_bytes=%.0f mean_agreement_object_wire_bytes=%.0f mean_aggregate_payload_bytes=%.0f mean_aggregate_apdb_encoded_bytes=%.0f mean_pool_certificate_bytes=%.0f mean_validation_certificate_bytes=%.0f mean_arc_certificate_bytes=%.0f mean_decision_certificate_bytes=%.0f mean_handoff_wire_bytes=%.0f mean_proposer_component_recovery_sent_bytes=%.0f mean_proposer_component_recovery_recv_bytes=%.0f mean_proposer_component_recovery_ms=%.2f mean_proposer_catalog_verify_ms=%.2f mean_proposer_catalog_scan_count=%.0f mean_proposer_rejected_component_count=%.0f mean_validator_component_recovery_sent_bytes=%.0f mean_validator_component_recovery_recv_bytes=%.0f mean_validator_component_recovery_ms=%.2f mean_validator_aggregate_recovery_sent_bytes=%.0f mean_validator_aggregate_recovery_recv_bytes=%.0f mean_validator_aggregate_recovery_ms=%.2f mean_arc_formation_ms=%.3f mean_vcert_formation_ms=%.3f mean_vcert_canonical_ms=%.3f mean_vcert_network_wait_ms=%.3f mean_vcert_signature_verify_ms=%.3f mean_vcert_aggregate_verify_ms=%.3f mean_deccert_formation_ms=%.3f mean_scalar_bounded_dlog_ms=%.3f mean_blinding_group_decryption_ms=%.3f aggregate_gate_wait_ms=%.2f aggregate_leaf_load_ms=%.2f aggregate_build_ms=%.2f aggregate_rs_ms=%.2f aggregate_header_token_ms=%.2f aggregate_offer_send_ms=%.2f aggregate_arc_wait_ms=%.2f aggregate_certificate_ms=%.2f recover_shard_ms=%.0f receipt_ms=%.0f mean_component_disperse_sent_bytes=%.0f mean_component_disperse_recv_bytes=%.0f mean_candidate_formation_sent_bytes=%.0f mean_candidate_formation_recv_bytes=%.0f mean_aggregate_agreement_sent_bytes=%.0f mean_aggregate_agreement_recv_bytes=%.0f mean_recover_shard_sent_bytes=%.0f mean_recover_shard_recv_bytes=%.0f mean_receipt_sent_bytes=%.0f mean_receipt_recv_bytes=%.0f mean_mvba_pd_data_sent_bytes=%.0f mean_mvba_pd_data_recv_bytes=%.0f mean_mvba_rc_data_sent_bytes=%.0f mean_mvba_rc_data_recv_bytes=%.0f mean_mvba_certificate_sent_bytes=%.0f mean_mvba_certificate_recv_bytes=%.0f",
+		" mean_cv_component_count=%.0f mean_cv_arc_holder_count=%.0f mean_cv_recovered_shard_count=%.0f mean_cv_verified_receipt_count=%.0f leaf_build_ms=%.0f component_disperse_ms=%.0f candidate_formation_ms=%.0f eligibility_coin_ms=%.2f proposer_slots_ms=%.2f mean_coin_fanout_ms=%.2f mean_candidate_ack_wait_ms=%.2f mean_candidate_retry_wait_ms=%.2f mean_candidate_fanout_max_peer_ms=%.2f mean_candidate_fanout_attempts=%.0f mean_candidate_fanout_retries=%.0f aggregate_disperse_ms=%.0f aggregate_agreement_ms=%.0f mean_apvss_ack_count=%.2f mean_apvss_fallback_count=%.2f mean_apvss_proof_bytes=%.0f mean_apvss_leaf_wire_bytes=%.0f mean_completed_candidate_count=%.0f mean_pool_wire_bytes=%.0f mean_validation_request_wire_bytes=%.0f mean_agreement_object_wire_bytes=%.0f mean_aggregate_payload_bytes=%.0f mean_aggregate_apdb_encoded_bytes=%.0f mean_pool_certificate_bytes=%.0f mean_validation_certificate_bytes=%.0f mean_arc_certificate_bytes=%.0f mean_decision_certificate_bytes=%.0f mean_handoff_wire_bytes=%.0f mean_proposer_component_recovery_sent_bytes=%.0f mean_proposer_component_recovery_recv_bytes=%.0f mean_proposer_component_recovery_ms=%.2f mean_proposer_catalog_verify_ms=%.2f mean_proposer_catalog_scan_count=%.0f mean_proposer_rejected_component_count=%.0f mean_dealer_hint_build_ms=%.2f mean_dealer_response_encode_ms=%.2f mean_receiver_payload_validation_ms=%.2f mean_recovery_queue_wait_ms=%.2f mean_recovery_worker_ms=%.2f mean_validator_component_recovery_sent_bytes=%.0f mean_validator_component_recovery_recv_bytes=%.0f mean_validator_component_recovery_ms=%.2f mean_validator_aggregate_recovery_sent_bytes=%.0f mean_validator_aggregate_recovery_recv_bytes=%.0f mean_validator_aggregate_recovery_ms=%.2f mean_arc_formation_ms=%.3f mean_vcert_formation_ms=%.3f mean_vcert_canonical_ms=%.3f mean_vcert_network_wait_ms=%.3f mean_vcert_signature_verify_ms=%.3f mean_vcert_aggregate_verify_ms=%.3f mean_deccert_formation_ms=%.3f mean_scalar_bounded_dlog_ms=%.3f mean_blinding_group_decryption_ms=%.3f aggregate_gate_wait_ms=%.2f aggregate_leaf_load_ms=%.2f aggregate_build_ms=%.2f aggregate_rs_ms=%.2f aggregate_header_token_ms=%.2f aggregate_offer_send_ms=%.2f aggregate_arc_wait_ms=%.2f aggregate_certificate_ms=%.2f recover_shard_ms=%.0f receipt_ms=%.0f mean_component_disperse_sent_bytes=%.0f mean_component_disperse_recv_bytes=%.0f mean_candidate_formation_sent_bytes=%.0f mean_candidate_formation_recv_bytes=%.0f mean_candidate_phase_counter_sent_bytes=%.0f mean_candidate_phase_counter_recv_bytes=%.0f mean_aggregate_agreement_sent_bytes=%.0f mean_aggregate_agreement_recv_bytes=%.0f mean_recover_shard_sent_bytes=%.0f mean_recover_shard_recv_bytes=%.0f mean_receipt_sent_bytes=%.0f mean_receipt_recv_bytes=%.0f mean_mvba_pd_data_sent_bytes=%.0f mean_mvba_pd_data_recv_bytes=%.0f mean_mvba_rc_data_sent_bytes=%.0f mean_mvba_rc_data_recv_bytes=%.0f mean_mvba_certificate_sent_bytes=%.0f mean_mvba_certificate_recv_bytes=%.0f",
 		meanOf(in.stats, func(s runStat) float64 { return s.cvComponentCount }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvARCHolderCount }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvRecoveredShardCount }),
@@ -1107,6 +1124,11 @@ func formatBenchResult(in benchResultInput) string {
 		meanOf(in.stats, func(s runStat) float64 { return s.cvProposerCatalogVerificationMs }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvProposerCatalogScanCount }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvProposerRejectedCount }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvDealerHintBuildMs }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvDealerResponseEncodeMs }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvReceiverPayloadValidationMs }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvRecoveryQueueWaitMs }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvRecoveryWorkerMs }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvValidatorComponentRecoverySentBytes }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvValidatorComponentRecoveryRecvBytes }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvValidatorComponentRecoveryMs }),
@@ -1134,6 +1156,7 @@ func formatBenchResult(in benchResultInput) string {
 		meanOf(in.stats, func(s runStat) float64 { return s.cvReceiptMs }),
 		meanPhaseBytes(in.stats, "component_disperse", true), meanPhaseBytes(in.stats, "component_disperse", false),
 		meanPhaseBytes(in.stats, "candidate_formation", true), meanPhaseBytes(in.stats, "candidate_formation", false),
+		meanPhaseBytes(in.stats, "candidate_phase_counter", true), meanPhaseBytes(in.stats, "candidate_phase_counter", false),
 		meanPhaseBytes(in.stats, "aggregate_agreement", true), meanPhaseBytes(in.stats, "aggregate_agreement", false),
 		meanPhaseBytes(in.stats, "recover_shard", true), meanPhaseBytes(in.stats, "recover_shard", false),
 		meanPhaseBytes(in.stats, "receipt", true), meanPhaseBytes(in.stats, "receipt", false),
@@ -1142,8 +1165,9 @@ func formatBenchResult(in benchResultInput) string {
 		meanPhaseBytes(in.stats, "mvba_certificate", true), meanPhaseBytes(in.stats, "mvba_certificate", false),
 	)
 	return cvLine + fmt.Sprintf(
-		" mean_component_apdb_dispersal_sent_bytes=%.0f mean_component_apdb_dispersal_recv_bytes=%.0f mean_pool_coin_sent_bytes=%.0f mean_pool_coin_recv_bytes=%.0f mean_validation_request_sent_bytes=%.0f mean_validation_request_recv_bytes=%.0f mean_aggregate_apdb_dispersal_sent_bytes=%.0f mean_aggregate_apdb_dispersal_recv_bytes=%.0f mean_candidate_relay_sent_bytes=%.0f mean_candidate_relay_recv_bytes=%.0f mean_decision_handoff_sent_bytes=%.0f mean_decision_handoff_recv_bytes=%.0f mean_new_aggregate_recovery_sent_bytes=%.0f mean_new_aggregate_recovery_recv_bytes=%.0f mean_new_aggregate_recovery_ms=%.2f mean_new_share_exchange_sent_bytes=%.0f mean_new_share_exchange_recv_bytes=%.0f",
+		" mean_component_apdb_dispersal_sent_bytes=%.0f mean_component_apdb_dispersal_recv_bytes=%.0f mean_arc_share_sent_bytes=%.0f mean_pool_coin_sent_bytes=%.0f mean_pool_coin_recv_bytes=%.0f mean_validation_request_sent_bytes=%.0f mean_validation_request_recv_bytes=%.0f mean_aggregate_apdb_dispersal_sent_bytes=%.0f mean_aggregate_apdb_dispersal_recv_bytes=%.0f mean_candidate_relay_sent_bytes=%.0f mean_candidate_relay_recv_bytes=%.0f mean_decision_handoff_sent_bytes=%.0f mean_decision_handoff_recv_bytes=%.0f mean_new_aggregate_recovery_sent_bytes=%.0f mean_new_aggregate_recovery_recv_bytes=%.0f mean_new_aggregate_recovery_ms=%.2f mean_new_share_exchange_sent_bytes=%.0f mean_new_share_exchange_recv_bytes=%.0f",
 		meanPhaseBytes(in.stats, "component_apdb_dispersal", true), meanPhaseBytes(in.stats, "component_apdb_dispersal", false),
+		meanPhaseBytes(in.stats, "arc_share", true),
 		meanPhaseBytes(in.stats, "pool_coin", true), meanPhaseBytes(in.stats, "pool_coin", false),
 		meanPhaseBytes(in.stats, "validation_request", true), meanPhaseBytes(in.stats, "validation_request", false),
 		meanPhaseBytes(in.stats, "aggregate_apdb_dispersal", true), meanPhaseBytes(in.stats, "aggregate_apdb_dispersal", false),

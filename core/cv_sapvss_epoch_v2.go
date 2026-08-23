@@ -239,6 +239,17 @@ func RunCVEpochV2(ctx context.Context, cfg Config) (*EpochResult, error) {
 	experimentMetrics := oldService.experimentMetricsV2()
 	receiverExperimentMetrics := receiverService.experimentMetricsV2()
 	cvAddCostBreakdownV2(phaseSent, phaseRecv, experimentMetrics, receiverExperimentMetrics)
+	// proposer slots share one runtime and can overwrite commPhase while they
+	// run concurrently. Preserve that raw window counter separately, and make
+	// candidate_formation tag-accurate for benchmark consumers.
+	phaseSent["candidate_phase_counter"] = phaseSent["candidate_formation"]
+	phaseRecv["candidate_phase_counter"] = phaseRecv["candidate_formation"]
+	if candidateBytes, ok := phaseSent["candidate_relay"]; ok {
+		phaseSent["candidate_formation"] = candidateBytes
+	}
+	if candidateBytes, ok := phaseRecv["candidate_relay"]; ok {
+		phaseRecv["candidate_formation"] = candidateBytes
+	}
 	return &EpochResult{
 		AgreementMode: "single-mvba-v2", AblationMode: c.AblationMode, CVAPVSSMode: cvSAPVSSV2ProtocolVersion,
 		LockedSet: append([]int(nil), poolDealerIDsV2(pool)...), SampledSet: selectedDealers, AggRLODealers: selectedDealers,
@@ -279,6 +290,11 @@ func RunCVEpochV2(ctx context.Context, cfg Config) (*EpochResult, error) {
 		CVProposerCatalogVerificationLatency:    experimentMetrics.proposerCatalogVerificationLatency,
 		CVProposerCatalogScanCount:              experimentMetrics.proposerCatalogScanCount,
 		CVProposerRejectedComponentCount:        experimentMetrics.proposerRejectedCount,
+		CVDealerHintBuildLatency:                experimentMetrics.dealerHintBuildLatency,
+		CVDealerResponseEncodeLatency:           experimentMetrics.dealerResponseEncodeLatency,
+		CVReceiverPayloadValidationLatency:      experimentMetrics.receiverPayloadDecodeLatency,
+		CVRecoveryQueueWaitLatency:              experimentMetrics.recoveryQueueWaitLatency,
+		CVRecoveryWorkerLatency:                 experimentMetrics.recoveryWorkerLatency,
 		CVValidatorComponentRecoverySentBytes:   experimentMetrics.validatorComponentRecoverySentBytes,
 		CVValidatorComponentRecoveryRecvBytes:   experimentMetrics.validatorComponentRecoveryRecvBytes,
 		CVValidatorComponentRecoveryLatency:     experimentMetrics.validatorComponentRecoveryLatency,
@@ -325,6 +341,7 @@ func cvAddCostBreakdownV2(sent, recv map[string]uint64, services ...cvServiceExp
 		return
 	}
 	tagGroups := map[string][]string{
+		"arc_share":          {cvTagAggregateARCShareV2},
 		"pool_coin":          {cvTagCoinShareV2, cvTagPoolOfferV2, cvTagPoolCertShareV2, cvTagPoolCertV2},
 		"validation_request": {cvTagValidationRequestV2, cvTagValidationSignatureV2, cvTagValidationResultV2},
 		"candidate_relay":    {cvTagCertifiedCandidateV2, cvTagCertifiedCandidateACKV2},

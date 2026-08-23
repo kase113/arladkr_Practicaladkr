@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,20 @@ const (
 	cvCandidateFanoutMaxAttemptsV2  = 4
 	cvCandidateFanoutRetryBaseV2    = 250 * time.Millisecond
 )
+
+const (
+	cvCandidateFanoutFloodV2      = "flood"
+	cvCandidateFanoutDirectOnlyV2 = "direct-only"
+	cvCandidateFanoutTreeV2       = "tree"
+)
+
+func cvCandidateFanoutModeV2() string {
+	mode := strings.ToLower(strings.TrimSpace(os.Getenv("RLADKR_CANDIDATE_FANOUT_MODE")))
+	if mode == cvCandidateFanoutDirectOnlyV2 || mode == cvCandidateFanoutTreeV2 {
+		return mode
+	}
+	return cvCandidateFanoutFloodV2
+}
 
 func cvCandidateFanoutParallelV2(peers int) int {
 	if peers <= 0 {
@@ -245,17 +260,12 @@ func (s *cvAPDBNetworkServiceV2) sendCertifiedCandidatePeerV2(
 // parallelism. A peer is retried only until it ACKs or the bounded attempt
 // budget is exhausted; successful peers are never included in later retries.
 func (s *cvAPDBNetworkServiceV2) fanoutCandidateV2(
-	ctx context.Context, digest string, wire []byte, excluded int,
+	ctx context.Context, digest string, wire []byte, excluded, origin int,
 ) error {
 	if s == nil || ctx == nil || len(digest) != 32 || len(wire) == 0 {
 		return fmt.Errorf("invalid CV V2 candidate fanout")
 	}
-	peers := make([]int, 0, len(s.cfg.OldRoster))
-	for _, member := range s.cfg.OldRoster {
-		if member != s.cfg.LocalNode && member != excluded {
-			peers = append(peers, member)
-		}
-	}
+	peers := cvCandidateFanoutPeersV2(s.cfg.OldRoster, s.cfg.LocalNode, excluded, origin, cvCandidateFanoutModeV2())
 	if len(peers) == 0 {
 		return nil
 	}
@@ -289,6 +299,42 @@ func (s *cvAPDBNetworkServiceV2) fanoutCandidateV2(
 		}
 	}
 	return nil
+}
+
+func cvCandidateFanoutPeersV2(roster []int, local, excluded, origin int, mode string) []int {
+	ordered := append([]int(nil), roster...)
+	sort.Ints(ordered)
+	if mode != cvCandidateFanoutTreeV2 {
+		peers := make([]int, 0, len(ordered))
+		for _, member := range ordered {
+			if member != local && member != excluded {
+				peers = append(peers, member)
+			}
+		}
+		return peers
+	}
+	root := sort.SearchInts(ordered, origin)
+	if root >= len(ordered) || ordered[root] != origin {
+		return nil
+	}
+	rotated := append(append([]int(nil), ordered[root:]...), ordered[:root]...)
+	localIndex := -1
+	for i, member := range rotated {
+		if member == local {
+			localIndex = i
+			break
+		}
+	}
+	if localIndex < 0 {
+		return nil
+	}
+	peers := make([]int, 0, 2)
+	for _, child := range []int{2*localIndex + 1, 2*localIndex + 2} {
+		if child < len(rotated) && rotated[child] != excluded {
+			peers = append(peers, rotated[child])
+		}
+	}
+	return peers
 }
 
 func (s *cvAPDBNetworkServiceV2) agreementPublicContextV2() (cvAgreementPublicContextV2, error) {
@@ -414,7 +460,7 @@ func (s *cvAPDBNetworkServiceV2) PublishCertifiedCandidateV2(
 	if cached := s.cachedCertifiedCandidateWireV2(digest); len(cached) != 0 {
 		wire = cached
 	}
-	if err := s.fanoutCandidateV2(ctx, digest, wire, -1); err != nil {
+	if err := s.fanoutCandidateV2(ctx, digest, wire, -1, candidate.Header.ProposerID); err != nil {
 		return err
 	}
 	for {
@@ -458,7 +504,7 @@ func (s *cvAPDBNetworkServiceV2) acknowledgeCertifiedCandidateV2(msg Message) st
 	// validity. Sending it before expensive verification avoids WAN retries
 	// while preserving the verification gate below.
 	if ack, err := cvEncodeCertifiedCandidateACKV2(digest); err == nil {
-		_ = s.sendAsync(msg.From, cvTagCertifiedCandidateACKV2, ack, nil)
+		_ = s.sendPriorityAsync(msg.From, cvTagCertifiedCandidateACKV2, ack, nil)
 	}
 	return digest
 }
@@ -495,7 +541,7 @@ func (s *cvAPDBNetworkServiceV2) processCertifiedCandidateV2(msg Message) {
 	if cached := s.cachedCertifiedCandidateWireV2(digest); bytes.Equal(cached, msg.Body) {
 		return
 	}
-	_, accepted, err := s.acceptCertifiedCandidateV2(msg.Body)
+	object, accepted, err := s.acceptCertifiedCandidateV2(msg.Body)
 	if err != nil {
 		return
 	}
@@ -506,7 +552,9 @@ func (s *cvAPDBNetworkServiceV2) processCertifiedCandidateV2(msg Message) {
 	if len(relayWire) == 0 {
 		relayWire = append([]byte(nil), msg.Body...)
 	}
-	go func() {
-		_ = s.fanoutCandidateV2(s.ctx, digest, relayWire, msg.From)
-	}()
+	if cvCandidateFanoutModeV2() != cvCandidateFanoutDirectOnlyV2 {
+		go func(origin int) {
+			_ = s.fanoutCandidateV2(s.ctx, digest, relayWire, msg.From, origin)
+		}(object.Header.ProposerID)
+	}
 }

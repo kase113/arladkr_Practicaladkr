@@ -191,6 +191,25 @@ func TestCVCandidateFanoutParallelScalesAndCaps(t *testing.T) {
 	}
 }
 
+func TestCVCandidateFanoutPeersModes(t *testing.T) {
+	roster := []int{7, 2, 5, 1, 4, 3, 6, 0}
+	direct := cvCandidateFanoutPeersV2(roster, 0, -1, 3, cvCandidateFanoutDirectOnlyV2)
+	if len(direct) != 7 {
+		t.Fatalf("direct-only peers=%v", direct)
+	}
+	tree := cvCandidateFanoutPeersV2(roster, 3, -1, 3, cvCandidateFanoutTreeV2)
+	if len(tree) != 2 || tree[0] != 4 || tree[1] != 5 {
+		t.Fatalf("root tree children=%v", tree)
+	}
+	child := cvCandidateFanoutPeersV2(roster, 4, -1, 3, cvCandidateFanoutTreeV2)
+	if len(child) != 2 || child[0] != 6 || child[1] != 7 {
+		t.Fatalf("child tree children=%v", child)
+	}
+	if got := cvCandidateFanoutPeersV2(roster, 3, 4, 3, cvCandidateFanoutTreeV2); len(got) != 1 || got[0] != 5 {
+		t.Fatalf("excluded tree child=%v", got)
+	}
+}
+
 func TestCVCryptoQueueCapacityIsBounded(t *testing.T) {
 	tests := []struct {
 		committee int

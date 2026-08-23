@@ -357,6 +357,20 @@ func (s *cvAPDBNetworkServiceV2) fanoutCandidateV2(
 	}
 	mode := cvCandidateFanoutModeV2()
 	if mode == cvCandidateFanoutPullV2 || mode == cvCandidateFanoutValidatorPullV2 {
+		if mode == cvCandidateFanoutValidatorPullV2 {
+			if _, validators, sampleErr := cvAgreementEligibilitySamplesV2Must(s); sampleErr == nil {
+				// Prefetch the complete authenticated candidate into every validator
+				// before announcing the digest. Validators then form a recovery set
+				// if the proposer disappears after publication.
+				for _, validator := range validators {
+					if validator != s.cfg.LocalNode {
+						if err := s.send(validator, cvTagCertifiedCandidateV2, wire); err != nil {
+							return err
+						}
+					}
+				}
+			}
+		}
 		announce, err := cvEncodeCertifiedCandidateAnnounceV2(origin, digest)
 		if err != nil {
 			return err

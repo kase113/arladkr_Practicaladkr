@@ -3227,3 +3227,15 @@ candidate replication/validator prefetch，再做 source failure 的正式活性
 均为 MVBA `quitpd` deadline，未形成有效 E2E 基准；该轮 invalidated，不覆盖前一轮达到 quorum
 的结果。当前证据说明 fallback 代码通过单测且不破坏 n=4，但 n=32 的活性仍受本机 32 vCPU
 调度和协议 timeout 影响，不能把一次成功或失败外推为正式性能结论。
+
+### Validator prefetch 实施（2026-08-24）
+
+`validator-pull` 现在在 digest announce 之前，先把完整、已 canonicalized 的 candidate wire
+发送给 validator sample 并写入其 candidate cache；随后才发送轻量 announce。这样 source 在
+candidate 发布后退出时，validator 仍可作为完整 payload 的替代来源。正常 n=4 validator-pull
+回归保持 `4/4`、无错误、单一 consensus hash，说明 prefetch 不破坏基本活性。
+
+source failure 注入仍需更精确地杀掉实际 proposer，并确认至少一个 validator 已收到 prefetch；
+若唯一 proposer 在 prefetch 完成前退出，协议仍应失败，这是预期的安全行为，而不是 fallback
+缺陷。下一轮应增加 prefetch-ready marker 或测试 transport 的按 tag 丢包钩子，再做可重复的
+source/validator failure A/B。

@@ -3257,3 +3257,68 @@ consensus hash。setup-adjusted E2E 均值约 `4.75 s`，每节点 total sent/re
 sent+recv 总和：若按单向 sent 比较，ARL n=16 的 `7.64 MB` 并不更低；若按双向总量比较，
 ARL 为约 `14.72 MB`，更不能宣称通信明显优于 PracticalADKR。当前只能确认 validator-pull
 显著压低了 candidate relay 本身，不能证明端到端总通信已优于 PracticalADKR。
+
+### MVBA 输入规模与通信口径复核（2026-08-24）
+
+用户定义的每节点通信量应统一为：
+
+```text
+T_i = S_i + R_i
+```
+
+因此 n=16 validator-pull 成功节点的报告值应写成 `T_i = 7.643 + 7.081 = 14.724 MB/node`
+（这里使用十进制 MB；若文档采用 MiB，必须对 sent 和 recv 同时换算）。此前只列
+`sent/recv=7.64/7.08 MB`，没有把两者相加，不应直接与 PracticalADKR 的单个 `6.87 MB`
+数字比较。
+
+代码审查确认 ARL 与 Practical 的 MVBA 输入并不等价：
+
+1. ARL 在 `core/cv_sapvss_agreement_network_v2.go` 将完整 canonical
+   `cvAgreementObjectV2` 放入 `ProposalValue.Payload`，然后调用
+   `runArladkrMVBADirectTCPInstance`。该对象包含完整 `Pool`、`PoolCert`、VCert、ARC 和
+   `SelectedIndices`。
+2. `cvAgreementObjectV2CanonicalBytes`/`cvDecodeAgreementObjectV2` 要求 pool 中有完整
+   `params.poolSize = n_o-f` 个 component refs；`cvVerifyAgreementObjectV2` 还逐个验证
+   这些 refs。因此单个 MVBA value 的大小至少是 `O(n_o)`，不是 O(1)。MVBA 的 SPBC/ABA
+   过程会复制或携带这个 payload，形成共识前的主要规模放大点。
+3. Practical 的 `decideByDumboMVBA` 也不是严格 O(1) payload：它把每个节点的
+   `2f+1` 规模 dealer set 及对应 APDB certificates 放进 `mvbaSetPayload`。它的优势是只
+   携带选定集合和证书，不把完整 `n_o-f` pool catalog 放进每个提案；因此更接近
+   `O(f)`/`O(kappa)`，而不是常数。
+4. ARL 的 `n_n` 流量主要来自同一 epoch 中 receiver/APVSS、handoff 和 new-share exchange，
+   不属于 MVBA 输入本身。不能把所有 `n_o+n_n` 的 total bytes 都归因于 MVBA；但若目标是
+   端到端 pre-consensus 通信，仍需把 old-side MVBA payload 与 new-side receiver traffic
+   分开统计。
+
+### n=16 共识前字节拆分
+
+按 tag 级统计，n=16 每节点共识前近似可归因项（sent+recv）为：component APDB dispersal
+`0.624 MB`、candidate relay `0.019 MB`、pool/coin control `0.083 MB`、validation request
+`0.005 MB`、aggregate APDB dispersal `0.084 MB`，合计约 `0.815 MB/node`。因此 validator-pull
+已经把 candidate relay 压到很小；当前 `T_i=14.724 MB` 的大头来自 recovery shard（约
+`6.019 MB`）、decision handoff（约 `4.138 MB`）及 MVBA/新 share 等其他阶段，而不是
+candidate announce 本身。
+
+`mean_candidate_phase_counter_*` 不能用于此拆分，它是并发 proposer slot 共享的混合窗口计数；
+必须使用 tag 级字段或独立 phase-owned counters。否则会再次把 proposer/recovery 流量误算为
+candidate 或 MVBA 输入。
+
+### 可行的 ARL MVBA 优化
+
+最有价值的改造是把 MVBA value 改成小型 authenticated descriptor，而不是完整 object：
+
+```text
+MVBA value = proposer_id + candidate_digest + pool_digest + header_digest + VCert/ARC summary
+```
+
+完整 candidate 通过已经实现的 validator-pull/catalog 服务按 digest 获取；predicate 先验证
+descriptor 的签名和 digest，再对拉取到的完整 object 做 canonical verification。这样 MVBA
+阶段的 payload 可以从 `O(n_o)` 降到接近 `O(1)`，且 pool catalog 不再随每个 SPBC 消息重复。
+
+但这不是只改一行编码：需要在 MVBA predicate 中加入 authenticated fetch、缓存命中/失败状态、
+source/validator fallback 和决定前的 value availability barrier。若 descriptor 已达成 MVBA
+而完整 object 无法拉取，必须拒绝该决定或触发备用 origin，不能先决定后发现 payload 缺失。
+
+在此之前，最小安全优化是保持当前完整 object 语义，只让 MVBA 传播 digest，且由 validator
+prefetch 保证至少 quorum 个完整 payload 已缓存；这能减少共识前的主要 O(n_o) 重复字节，同时
+不改变证书绑定。完成 n=32 多轮活性和故障注入前，不应把该方案切成默认路径。

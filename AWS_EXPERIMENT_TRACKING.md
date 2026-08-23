@@ -3182,3 +3182,14 @@ n=4 smoke 回归为 `4/4` 结果、无错误、单一 consensus hash，说明 pu
 成立。当前 pull 是全 roster announce + 按需 fetch，还不是 validator-sample-only；n=32 以上仍
 需要在 pull 成功后再逐步限制 fetch 目标集合，并补充 source failure/fallback 测试。candidate
 relay 统计已包含 announce/fetch/response 三类 tag，避免 pull 模式下漏算完整 response。
+
+### Validator-pull 原型回归（本地 n=4，2026-08-23）
+
+新增 `RLADKR_CANDIDATE_FANOUT_MODE=validator-pull`：announce 仍只携带 origin/digest；validator
+sample 节点向 origin 拉取完整 candidate，非 validator 节点向确定的 validator 请求；validator
+在尚未缓存时记录 waiter、代 origin 拉取，再把 digest-bound response 转发给 waiter。接收端仍
+经过原有 canonical decode/verify，不接受未匹配 digest 的 response。
+
+n=4 smoke 为 `4/4`、无错误、单一 consensus hash。该结果证明 validator-aware pull 的基本
+请求链和认证绑定可用，但尚未证明 source failure、validator failure 或 n=32 以上的 quorum
+可用性；下一轮应先加入多 validator fallback，再进行 n=32 A/B。

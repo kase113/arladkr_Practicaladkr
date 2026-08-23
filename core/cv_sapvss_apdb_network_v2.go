@@ -284,7 +284,7 @@ type cvAPDBNetworkServiceV2 struct {
 	recoveryWG              sync.WaitGroup
 	processingLaneOffersV2  map[[2]int]struct{}
 	processingCandidatesV2  map[string]struct{}
-	candidateOriginsV2      map[string]int
+	candidateOriginsV2      map[string]map[int]struct{}
 	candidateFetchWaitersV2 map[string]map[int]struct{}
 	experimentMetrics       cvServiceExperimentMetricsV2
 	done                    chan struct{}
@@ -387,7 +387,7 @@ func newCVAPDBNetworkServiceV2(
 		recoveryQueue:           make(chan cvRecoveryJobV2, cvRecoveryQueueCapacityV2(len(cfg.OldRoster)+len(cfg.NewRoster))),
 		processingLaneOffersV2:  make(map[[2]int]struct{}, len(cfg.OldRoster)),
 		processingCandidatesV2:  make(map[string]struct{}, cfg.Params.proposerSampleSize),
-		candidateOriginsV2:      make(map[string]int, cfg.Params.proposerSampleSize),
+		candidateOriginsV2:      make(map[string]map[int]struct{}, cfg.Params.proposerSampleSize),
 		candidateFetchWaitersV2: make(map[string]map[int]struct{}, cfg.Params.proposerSampleSize),
 		experimentMetrics: cvServiceExperimentMetricsV2{
 			tagSentBytes: make(map[string]uint64), tagRecvBytes: make(map[string]uint64),

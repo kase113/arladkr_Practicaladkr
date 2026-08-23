@@ -618,7 +618,10 @@ func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateAnnounceV2(msg Message)
 		return
 	}
 	s.mu.Lock()
-	s.candidateOriginsV2[digest] = origin
+	if s.candidateOriginsV2[digest] == nil {
+		s.candidateOriginsV2[digest] = make(map[int]struct{})
+	}
+	s.candidateOriginsV2[digest][origin] = struct{}{}
 	s.mu.Unlock()
 	if cvCandidateFanoutModeV2() == cvCandidateFanoutValidatorPullV2 {
 		if _, validators, sampleErr := cvAgreementEligibilitySamplesV2Must(s); sampleErr == nil {
@@ -691,10 +694,16 @@ func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateFetchV2(msg Message) {
 				s.candidateFetchWaitersV2[digest] = make(map[int]struct{})
 			}
 			s.candidateFetchWaitersV2[digest][msg.From] = struct{}{}
-			origin, originKnown := s.candidateOriginsV2[digest]
+			origins := make([]int, 0, len(s.candidateOriginsV2[digest]))
+			for origin := range s.candidateOriginsV2[digest] {
+				origins = append(origins, origin)
+			}
 			s.mu.Unlock()
-			if originKnown && origin != msg.From {
-				_ = s.sendPriorityAsync(origin, cvTagCertifiedCandidateFetchV2, msg.Body, nil)
+			sort.Ints(origins)
+			for _, origin := range origins {
+				if origin != msg.From {
+					_ = s.sendPriorityAsync(origin, cvTagCertifiedCandidateFetchV2, msg.Body, nil)
+				}
 			}
 		}
 		return

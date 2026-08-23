@@ -3194,6 +3194,11 @@ n=4 smoke 为 `4/4`、无错误、单一 consensus hash。该结果证明 valida
 请求链和认证绑定可用，但尚未证明 source failure、validator failure 或 n=32 以上的 quorum
 可用性；下一轮应先加入多 validator fallback，再进行 n=32 A/B。
 
+随后补充 origin-set fallback：同一 digest 现在保留已见的多个 proposer origins，validator cache
+miss 时按节点 ID 稳定顺序向这些 origins 转发 fetch，不再覆盖早先 origin。这样 source failure
+测试可以利用另一个已发布同 digest 的 proposer 作为候选来源；若整个 origin 集合都不可达，仍
+会按正常 quorum 失败，不会伪造成功结果。
+
 ### Validator-pull fallback n=32 回归（本地新机器，2026-08-23）
 
 加入 validator sample 顺序 fallback：非 validator 会依次向 sample validators 发起 digest fetch，

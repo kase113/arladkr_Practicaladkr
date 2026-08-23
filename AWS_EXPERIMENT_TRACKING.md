@@ -3239,3 +3239,10 @@ source failure 注入仍需更精确地杀掉实际 proposer，并确认至少�
 若唯一 proposer 在 prefetch 完成前退出，协议仍应失败，这是预期的安全行为，而不是 fallback
 缺陷。下一轮应增加 prefetch-ready marker 或测试 transport 的按 tag 丢包钩子，再做可重复的
 source/validator failure A/B。
+
+### 小规模 validator-pull 活性回归（本地 n=10，2026-08-24）
+
+为避免在 32 vCPU 主机上重复高成本 n=32 测试，使用 `n=10,f=3`、validator-pull 做单轮活性
+回归。10/10 节点完成，达到 quorum 7，无错误或 OOM，结果共享单一 consensus hash。setup 调整
+后的 E2E 均值约 `2.04 s`；每节点 total sent/recv 约 `7.50/7.50 MB`。这说明在较小拓扑下
+validator-pull 没有明显活性问题，但不能替代 n=32 的正式性能结论。

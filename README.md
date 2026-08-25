@@ -1,24 +1,24 @@
 # arladkr Practical Hello World
 
-一个最小、可运行的 Go 示例仓库，作为 `kase113/arladkr_Practicaladkr` 的独立 Hello World 起点。
+A minimal, runnable Go example repository that serves as an independent Hello World starting point for `kase113/arladkr_Practicaladkr`.
 
-## 运行
+## Run
 
-需要 Go 1.26 或更新版本：
+Requires Go 1.26 or newer:
 
 ```bash
 go run .
 go run . ADKR
 ```
 
-输出分别为：
+The commands print:
 
 ```text
 Hello, World!
 Hello, ADKR!
 ```
 
-## 测试
+## Test
 
 ```bash
 go test ./...

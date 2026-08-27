@@ -2,8 +2,10 @@ package core
 
 import (
 	"bytes"
+	"compress/flate"
 	"encoding/binary"
 	"fmt"
+	"io"
 
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 )
@@ -23,6 +25,8 @@ type cvAPDBLockV2 struct {
 	InstanceDigest []byte
 	Root           []byte
 	Certificate    []byte
+	// canonicalWire is set only after strict decoding and byte equality.
+	canonicalWire []byte
 }
 
 type cvAPDBStoreV2 struct {
@@ -260,6 +264,9 @@ func cvAPDBLockV2CanonicalBytes(lock *cvAPDBLockV2) ([]byte, error) {
 		len(lock.Certificate) > cvMaxComponentSignatureBytes {
 		return nil, fmt.Errorf("invalid CV V2 APDB lock")
 	}
+	if len(lock.canonicalWire) != 0 {
+		return lock.canonicalWire, nil
+	}
 	var wire bytes.Buffer
 	_ = cvWriteBytes(&wire, []byte(cvAPDBLockWireDomain))
 	_ = cvWriteBytes(&wire, lock.InstanceDigest)
@@ -291,6 +298,7 @@ func cvDecodeAPDBLockV2(wire []byte) (*cvAPDBLockV2, error) {
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 APDB lock")
 	}
+	lock.canonicalWire = canonical
 	return lock, nil
 }
 
@@ -352,9 +360,12 @@ func cvDecodeAPDBStoreV2(wire []byte, totalShards, shardBytes int) (*cvAPDBStore
 		return nil, fmt.Errorf("trailing CV V2 APDB store bytes")
 	}
 	store := &cvAPDBStoreV2{InstanceDigest: instanceDigest, Root: root, Index: index, Shard: shard, Siblings: siblings}
-	canonical, err := cvAPDBStoreV2CanonicalBytes(store, totalShards, shardBytes)
-	if err != nil || !bytes.Equal(canonical, wire) {
-		return nil, fmt.Errorf("non-canonical CV V2 APDB store")
+	// The parser consumed the fixed domain, digest, root, index, exact shard,
+	// exact Merkle depth, all 32-byte siblings, and EOF. Verify the authenticated
+	// root directly; re-serializing the full shard/branch solely to compare the
+	// same deterministic framing adds an allocation on every response.
+	if err := cvVerifyAPDBStoreV2(store, totalShards, shardBytes); err != nil {
+		return nil, err
 	}
 	return store, nil
 }
@@ -367,7 +378,10 @@ func cvCloneByteSlices(input [][]byte) [][]byte {
 	return out
 }
 
-const cvAPDBPayloadWireDomain = "ARL-CV-sAPVSS/v2-scalar-group/apdb-recover-payload"
+const (
+	cvAPDBPayloadWireDomain           = "ARL-CV-sAPVSS/v2-scalar-group/apdb-recover-payload"
+	cvAPDBPayloadCompressedWireDomain = "ARL-CV-sAPVSS/v2-scalar-group/apdb-recover-payload-deflate-v1"
+)
 
 type cvAPDBPayloadResponseV2 struct {
 	InstanceDigest []byte
@@ -397,22 +411,77 @@ func cvAPDBPayloadResponseV2CanonicalBytes(response *cvAPDBPayloadResponseV2) ([
 	return wire.Bytes(), nil
 }
 
+func cvAPDBPayloadResponseV2TransportBytes(response *cvAPDBPayloadResponseV2) ([]byte, error) {
+	legacy, err := cvAPDBPayloadResponseV2CanonicalBytes(response)
+	if err != nil {
+		return nil, err
+	}
+	var compressed bytes.Buffer
+	writer, err := flate.NewWriter(&compressed, flate.DefaultCompression)
+	if err != nil {
+		return nil, err
+	}
+	if _, err = writer.Write(response.Payload); err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	if err = writer.Close(); err != nil {
+		return nil, err
+	}
+	// Keep the legacy representation when compression does not pay for its
+	// domain, original-length field, and framing overhead.
+	if compressed.Len()+len(cvAPDBPayloadCompressedWireDomain)+16 >= len(response.Payload) {
+		return legacy, nil
+	}
+	var wire bytes.Buffer
+	_ = cvWriteBytes(&wire, []byte(cvAPDBPayloadCompressedWireDomain))
+	_ = cvWriteBytes(&wire, response.InstanceDigest)
+	if err := cvWriteUint32(&wire, len(response.Payload)); err != nil {
+		return nil, err
+	}
+	_ = cvWriteBytes(&wire, compressed.Bytes())
+	if len(response.Hints) > 0 {
+		_ = cvWriteBytes(&wire, response.Hints)
+	}
+	return wire.Bytes(), nil
+}
+
 func cvDecodeAPDBPayloadResponseV2(wire []byte, maximumPayload int) (*cvAPDBPayloadResponseV2, error) {
 	if maximumPayload <= 0 {
 		return nil, fmt.Errorf("invalid CV V2 APDB payload response limit")
 	}
 	r := newCVWireReader(wire)
-	domain, err := r.bytes(len(cvAPDBPayloadWireDomain))
-	if err != nil || !bytes.Equal(domain, []byte(cvAPDBPayloadWireDomain)) {
+	domain, err := r.bytes(len(cvAPDBPayloadCompressedWireDomain))
+	compressed := bytes.Equal(domain, []byte(cvAPDBPayloadCompressedWireDomain))
+	if err != nil || (!compressed && !bytes.Equal(domain, []byte(cvAPDBPayloadWireDomain))) {
 		return nil, fmt.Errorf("invalid CV V2 APDB payload response domain")
 	}
 	instanceDigest, err := r.bytes(32)
 	if err != nil {
 		return nil, fmt.Errorf("invalid CV V2 APDB payload response instance")
 	}
-	payload, err := r.bytes(maximumPayload)
-	if err != nil || len(payload) == 0 {
-		return nil, fmt.Errorf("invalid CV V2 APDB payload response body")
+	var payload []byte
+	if compressed {
+		originalLength, lengthErr := r.uint32()
+		if lengthErr != nil || originalLength <= 0 || originalLength > maximumPayload {
+			return nil, fmt.Errorf("invalid CV V2 APDB compressed payload length")
+		}
+		compressedLimit := maximumPayload + maximumPayload/16 + 1024
+		compressedPayload, readErr := r.bytes(compressedLimit)
+		if readErr != nil || len(compressedPayload) == 0 {
+			return nil, fmt.Errorf("invalid CV V2 APDB compressed payload body")
+		}
+		reader := flate.NewReader(bytes.NewReader(compressedPayload))
+		payload, err = io.ReadAll(io.LimitReader(reader, int64(maximumPayload)+1))
+		closeErr := reader.Close()
+		if err != nil || closeErr != nil || len(payload) != originalLength {
+			return nil, fmt.Errorf("invalid CV V2 APDB compressed payload")
+		}
+	} else {
+		payload, err = r.bytes(maximumPayload)
+		if err != nil || len(payload) == 0 {
+			return nil, fmt.Errorf("invalid CV V2 APDB payload response body")
+		}
 	}
 	var hints []byte
 	if r.reader.Len() > 0 {

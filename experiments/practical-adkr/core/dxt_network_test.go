@@ -1,11 +1,46 @@
 package core
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 )
+
+func TestDXTTranscriptWireCompressionRoundTrip(t *testing.T) {
+	transcript := &DXTTranscript{Dealer: 3, Commitments: map[int][]byte{}, Ciphertexts: map[int][]byte{}, BlindingCiphertexts: map[int]DXTBlindingCiphertext{}}
+	for i := 0; i < 32; i++ {
+		transcript.Commitments[i] = bytes.Repeat([]byte{byte(i)}, 33)
+		transcript.Ciphertexts[i] = bytes.Repeat([]byte{byte(i + 1)}, 384)
+		transcript.BlindingCiphertexts[i] = DXTBlindingCiphertext{C0: bytes.Repeat([]byte{2}, 33), C1: bytes.Repeat([]byte{3}, 33)}
+	}
+	digest, err := dxtTranscriptDigest(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := dxtTranscriptWire{Kind: dxtTranscriptWireKind, SID: "sid", Epoch: 1, Dealer: 3, Transcript: transcript, TranscriptDigest: digest}
+	compressed, err := marshalDXTTranscriptWire(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plain, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compressed) >= len(plain) {
+		t.Fatalf("compressed wire did not shrink: compressed=%d plain=%d", len(compressed), len(plain))
+	}
+	var got dxtTranscriptWire
+	if err := unmarshalDXTTranscriptWire(compressed, &got); err != nil {
+		t.Fatal(err)
+	}
+	gotDigest, err := dxtTranscriptDigest(got.Transcript)
+	if err != nil || !bytes.Equal(gotDigest, digest) {
+		t.Fatalf("compressed transcript digest changed: err=%v", err)
+	}
+}
 
 func TestNetworkDXTReceiverReadinessWaitsForQuorum(t *testing.T) {
 	old := []int{0, 1, 2, 3}

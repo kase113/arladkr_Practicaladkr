@@ -509,6 +509,43 @@ func TestCVAggregateManifestOfferRejectsMutation(t *testing.T) {
 	})
 }
 
+func TestCVAggregateManifestOfferExactRetryUsesCachedARCWire(t *testing.T) {
+	cfg := NormalizeConfig(Config{SID: "arc-retry-cache", Epoch: 7})
+	transport := newCVRouterTestTransport([]int{1}, 2)
+	offer := &cvAggregateManifestOffer{}
+	msg := Message{From: 1, Body: []byte("canonical-offer")}
+	responseKey := fmt.Sprintf("%d:%x", msg.From, hashBytes(msg.Body))
+	want := []byte("cached-arc-share")
+	service := &cvComponentService{
+		cfg: cfg, localNode: 0, transport: transport, processingOffers: make(map[string]struct{}),
+		localARCShareWires: map[string][]byte{responseKey: append([]byte(nil), want...)},
+	}
+
+	service.handleAggregateManifestOffer(msg, offer)
+	transport.mu.Lock()
+	if len(transport.sent) != 1 {
+		transport.mu.Unlock()
+		t.Fatalf("cached ARC sends=%d want=1", len(transport.sent))
+	}
+	sent := transport.sent[0]
+	transport.mu.Unlock()
+	got, err := cvDecodeNetworkEnvelope(sent.Body, cfg.SID, cfg.Epoch)
+	if err != nil || sent.Tag != cvTagARCShare || !bytes.Equal(got, want) {
+		t.Fatalf("cached ARC response mismatch: tag=%q err=%v", sent.Tag, err)
+	}
+
+	mutated := msg
+	mutated.Body = append([]byte(nil), msg.Body...)
+	mutated.Body[0] ^= 1
+	service.handleAggregateManifestOffer(mutated, offer)
+	transport.mu.Lock()
+	sends := len(transport.sent)
+	transport.mu.Unlock()
+	if sends != 1 {
+		t.Fatalf("mutated offer used exact-wire cache: sends=%d", sends)
+	}
+}
+
 func TestCVComponentServiceCandidateCollectionRequiresReadyCertifiedDescriptors(t *testing.T) {
 	cfg, leafContext, _, _ := cvM4Fixture(t)
 	if err := ensureRuntime(&cfg); err != nil {

@@ -464,7 +464,8 @@ func tcpLoopbackLaneForTag(tag string) int {
 	switch tag {
 	case cvTagComponentInit, cvTagComponentLeaf, cvTagComponentGet, cvTagRecoverGet,
 		cvTagRecoverShard, cvTagAPDBStoreV2, cvTagAPDBRecoverGetV2,
-		cvTagAPDBRecoverStoreV2, cvTagAggregateRecoverGetV2, cvTagAggregateRecoverStoreV2,
+		cvTagAPDBRecoverStoreV2, cvTagAggregateRecoverGetV2, cvTagAggregateRecoverCancelV2, cvTagAggregateRecoverStoreV2,
+		cvTagAggregatePayloadGetV2, cvTagAggregatePayloadV2,
 		cvTagAggregateShareV2, cvTagCertifiedCandidateV2:
 		return 1
 	default:

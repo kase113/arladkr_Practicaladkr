@@ -7,11 +7,47 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
+	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 )
 
 type cvLaneSendFailureTransport struct {
 	*cvRouterTestTransport
 	failedReceiver int
+}
+
+func TestCVLeafV2CompactACKOwnershipSizeN32(t *testing.T) {
+	oldRoster := make([]int, 32)
+	newRoster := make([]int, 32)
+	for i := range oldRoster {
+		oldRoster[i] = i
+		newRoster[i] = 32 + i
+	}
+	context := &cvLeafContextV2{
+		SID: "cv-leaf-size-n32", Epoch: 1, OldRoster: oldRoster, NewRoster: newRoster,
+		ReceiverRegistryDigest: hashBytes([]byte("cv-leaf-size-n32-registry")),
+		SharingDegree:          21, Profile: cvChunkProfile{chunkBits: 8, maxComponents: 11},
+	}
+	chunks, err := cvChunkCount(context.Profile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fullBytes, err := cvLeafWireSizeV2(context, chunks, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pointBytes := bls12381.SizeOfG1AffineCompressed
+	ownershipProofBytes := cvFramedWireSizeV2(len(cvOwnershipProofWireDomainV2)) +
+		2*cvPointVectorWireSizeV2(chunks) + 3*pointBytes +
+		2*cvScalarVectorWireSizeV2(chunks) + 2*fr.Bytes
+	duplicatedBytes := len(newRoster) * cvFramedWireSizeV2(ownershipProofBytes)
+	compactBytes := fullBytes - duplicatedBytes
+	if compactBytes <= 0 || duplicatedBytes <= 0 || compactBytes >= fullBytes {
+		t.Fatalf("invalid compact ACK ownership estimate: full=%d compact=%d duplicate=%d", fullBytes, compactBytes, duplicatedBytes)
+	}
+	t.Logf("n32 all-ACK leaf full=%d compact=%d duplicate=%d reduction=%.2f%%",
+		fullBytes, compactBytes, duplicatedBytes, 100*float64(duplicatedBytes)/float64(fullBytes))
 }
 
 func (t *cvLaneSendFailureTransport) Send(msg Message) error {

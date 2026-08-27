@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math/rand"
 	"sort"
+	"sync"
 	"time"
 )
 
@@ -24,12 +25,14 @@ type mvbaABACoinMsg struct {
 }
 
 type DumboMVBA struct {
-	cfg    Config
-	net    Network
-	signer Signer
-	spbc   SPBCDriver
-	recv   <-chan ReceivedMessage
-	logger Logger
+	cfg       Config
+	net       Network
+	signer    Signer
+	spbc      SPBCDriver
+	recv      <-chan ReceivedMessage
+	logger    Logger
+	rcStoreMu sync.RWMutex
+	rcStores  map[string]rcStoreMsg
 }
 
 func NewDumboMVBA(
@@ -78,13 +81,48 @@ func NewDumboMVBA(
 	}
 
 	return &DumboMVBA{
-		cfg:    cfg,
-		net:    net,
-		signer: signer,
-		spbc:   spbc,
-		recv:   recv,
-		logger: logger,
+		cfg:      cfg,
+		net:      net,
+		signer:   signer,
+		spbc:     spbc,
+		recv:     recv,
+		logger:   logger,
+		rcStores: make(map[string]rcStoreMsg),
 	}, nil
+}
+
+func (m *DumboMVBA) cacheRCStore(store *rcStoreMsg) {
+	if m == nil || store == nil || store.SID == "" {
+		return
+	}
+	cp := rcStoreMsg{
+		SID: store.SID, Root: append([]byte(nil), store.Root...), From: store.From,
+		Stripe: append([]byte(nil), store.Stripe...),
+		Branch: merkleBranch{Index: store.Branch.Index, Siblings: cloneSiblings(store.Branch.Siblings)},
+	}
+	m.rcStoreMu.Lock()
+	if m.rcStores == nil {
+		m.rcStores = make(map[string]rcStoreMsg)
+	}
+	m.rcStores[store.SID] = cp
+	m.rcStoreMu.Unlock()
+}
+
+func (m *DumboMVBA) cachedRCStore(sid string) (*rcStoreMsg, bool) {
+	if m == nil || sid == "" {
+		return nil, false
+	}
+	m.rcStoreMu.RLock()
+	store, ok := m.rcStores[sid]
+	m.rcStoreMu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+	cp := store
+	cp.Root = append([]byte(nil), store.Root...)
+	cp.Stripe = append([]byte(nil), store.Stripe...)
+	cp.Branch.Siblings = cloneSiblings(store.Branch.Siblings)
+	return &cp, true
 }
 
 func (m *DumboMVBA) Run(ctx context.Context, input ProposalValue) (ProposalValue, error) {

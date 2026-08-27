@@ -363,14 +363,17 @@ func TestCVSAPVSSRouterEnforcesV2HandoffRecoveryDirections(t *testing.T) {
 	}
 	transport.inject(10, Message{From: 1, To: 10, Tag: cvTagHandoffV2, Body: envelope})
 	transport.inject(10, Message{From: 2, To: 10, Tag: cvTagAggregateRecoverStoreV2, Body: envelope})
+	transport.inject(10, Message{From: 2, To: 10, Tag: cvTagAggregatePayloadV2, Body: envelope})
 	transport.inject(10, Message{From: 11, To: 10, Tag: cvTagAggregateShareV2, Body: envelope})
 	transport.inject(1, Message{From: 2, To: 1, Tag: cvTagHandoffV2, Body: envelope})
 	transport.inject(1, Message{From: 10, To: 1, Tag: cvTagAggregateRecoverGetV2, Body: envelope})
+	transport.inject(1, Message{From: 10, To: 1, Tag: cvTagAggregateRecoverCancelV2, Body: envelope})
+	transport.inject(1, Message{From: 10, To: 1, Tag: cvTagAggregatePayloadGetV2, Body: envelope})
 	transport.inject(10, Message{From: 11, To: 10, Tag: cvTagHandoffV2, Body: envelope})
 	transport.inject(1, Message{From: 2, To: 1, Tag: cvTagAggregateRecoverGetV2, Body: envelope})
 	transport.inject(1, Message{From: 10, To: 1, Tag: cvTagAggregateRecoverStoreV2, Body: envelope})
 
-	for _, expected := range []string{cvTagHandoffV2, cvTagAggregateRecoverStoreV2, cvTagAggregateShareV2} {
+	for _, expected := range []string{cvTagHandoffV2, cvTagAggregateRecoverStoreV2, cvTagAggregatePayloadV2, cvTagAggregateShareV2} {
 		select {
 		case msg := <-newInbox:
 			if msg.Tag != expected {
@@ -380,7 +383,8 @@ func TestCVSAPVSSRouterEnforcesV2HandoffRecoveryDirections(t *testing.T) {
 			t.Fatalf("new node did not receive %s", expected)
 		}
 	}
-	for _, expected := range []string{cvTagHandoffV2, cvTagAggregateRecoverGetV2} {
+	for _, expected := range []string{cvTagHandoffV2, cvTagAggregateRecoverGetV2, cvTagAggregateRecoverCancelV2,
+		cvTagAggregatePayloadGetV2} {
 		select {
 		case msg := <-oldInbox:
 			if msg.Tag != expected {

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,6 +12,172 @@ import (
 
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 )
+
+func TestCVRecoveryRequestDedupe(t *testing.T) {
+	service := &cvAPDBNetworkServiceV2{}
+	const key = "7:duplicate-request"
+	if !service.claimRecoveryRequestV2(key) {
+		t.Fatal("first recovery request claim rejected")
+	}
+	if service.claimRecoveryRequestV2(key) {
+		t.Fatal("duplicate recovery request claim accepted")
+	}
+	service.releaseRecoveryRequestV2(key)
+	if !service.claimRecoveryRequestV2(key) {
+		t.Fatal("request was not reusable after release")
+	}
+}
+
+func TestCVRecoveredComponentPayloadKeyBindsDigestAndRoot(t *testing.T) {
+	ref := cvComponentRefV2{
+		Header: cvComponentHeaderV2{
+			Instance: bytes.Repeat([]byte{0x11}, 32), PayloadDigest: bytes.Repeat([]byte{0x22}, 32),
+		},
+		Lock: cvAPDBLockV2{Root: bytes.Repeat([]byte{0x33}, 32)},
+	}
+	want := cvRecoveredComponentPayloadKeyV2(ref)
+	same := cloneComponentRefV2(ref)
+	if got := cvRecoveredComponentPayloadKeyV2(same); got != want {
+		t.Fatal("equal component refs produced different recovered-payload keys")
+	}
+	conflictingDigest := cloneComponentRefV2(ref)
+	conflictingDigest.Header.PayloadDigest[0] ^= 1
+	if got := cvRecoveredComponentPayloadKeyV2(conflictingDigest); got == want {
+		t.Fatal("payload-digest equivocation reused a recovered-payload key")
+	}
+	conflictingRoot := cloneComponentRefV2(ref)
+	conflictingRoot.Lock.Root[0] ^= 1
+	if got := cvRecoveredComponentPayloadKeyV2(conflictingRoot); got == want {
+		t.Fatal("APDB-root equivocation reused a recovered-payload key")
+	}
+}
+
+func TestCVVerifiedComponentStoreTransfersPayloadAndDropsRecoveryCopy(t *testing.T) {
+	ref := cvComponentRefV2{
+		Header: cvComponentHeaderV2{
+			DealerID: 3, Instance: bytes.Repeat([]byte{0x41}, 32),
+			PayloadDigest: bytes.Repeat([]byte{0x42}, 32),
+		},
+		Lock: cvAPDBLockV2{Root: bytes.Repeat([]byte{0x43}, 32)},
+	}
+	payload := []byte("immutable verified component payload")
+	hints := []byte("immutable decoded point hints")
+	digest := bytes.Repeat([]byte{0x44}, 32)
+	leaf := &cvLeafV2{DealerID: ref.Header.DealerID, Digest: append([]byte(nil), digest...)}
+	key := cvRecoveredComponentPayloadKeyV2(ref)
+	service := &cvAPDBNetworkServiceV2{
+		cfg:                  cvAPDBNetworkServiceConfigV2{OldRoster: []int{ref.Header.DealerID}},
+		verifiedComponentsV2: make(map[int]cvVerifiedComponentV2),
+	}
+	service.cacheRecoveredPayloadLockedV2(key, payload, hints)
+	recovered := service.recoveredPayloadsV2[key]
+	if len(recovered.payload) == 0 || &recovered.payload[0] != &payload[0] ||
+		len(recovered.hints) == 0 || &recovered.hints[0] != &hints[0] {
+		t.Fatal("recovered component cache copied rather than accepted collector-owned slices")
+	}
+	service.storeVerifiedComponentLockedV2(ref, digest, payload, leaf)
+	entry := service.verifiedComponentsV2[ref.Header.DealerID]
+	if len(entry.payload) == 0 || &entry.payload[0] != &payload[0] {
+		t.Fatal("verified component store copied rather than transferred payload ownership")
+	}
+	if _, ok := service.recoveredPayloadsV2[key]; ok {
+		t.Fatal("verified component store retained redundant recovered payload and hints")
+	}
+	digest[0] ^= 1
+	if bytes.Equal(entry.leafDigest, digest) {
+		t.Fatal("verified component leaf digest did not retain an independent integrity copy")
+	}
+}
+
+func TestCVComponentRecoveryResponseCache(t *testing.T) {
+	service := &cvAPDBNetworkServiceV2{}
+	const key = "3:lock-hash"
+	if got := service.cachedComponentRecoveryResponseV2(key); got != nil {
+		t.Fatalf("unexpected cache hit: %x", got)
+	}
+	response := []byte("store-response")
+	service.cacheComponentRecoveryResponseV2(key, response)
+	response[0] = 'X'
+	got := service.cachedComponentRecoveryResponseV2(key)
+	if string(got) != "store-response" {
+		t.Fatalf("cache did not copy response: %q", got)
+	}
+	// Cached responses are immutable and are copied by sendAsync at the queue
+	// boundary; repeated reads must preserve the canonical bytes.
+	if string(service.cachedComponentRecoveryResponseV2(key)) != "store-response" {
+		t.Fatal("cache bytes changed between reads")
+	}
+}
+
+func TestCVValidationSignatureUsesPriorityOutbound(t *testing.T) {
+	service := &cvAPDBNetworkServiceV2{
+		ctx:              context.Background(),
+		outbound:         make(chan cvOutboundMessageV2, 1),
+		priorityOutbound: make(chan cvOutboundMessageV2, 1),
+	}
+	statement := bytes.Repeat([]byte{0x42}, 32)
+	signature := bytes.Repeat([]byte{0x24}, 48)
+	if err := service.sendValidationSignatureV2(7, statement, signature); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.outbound) != 0 || len(service.priorityOutbound) != 1 {
+		t.Fatalf("validation signature queues: normal=%d priority=%d", len(service.outbound), len(service.priorityOutbound))
+	}
+	message := <-service.priorityOutbound
+	if message.to != 7 || message.tag != cvTagValidationSignatureV2 {
+		t.Fatalf("validation signature target=%d tag=%s", message.to, message.tag)
+	}
+	decoded, err := cvDecodeValidationSignatureV2(message.payload)
+	if err != nil || !bytes.Equal(decoded.Statement, statement) || !bytes.Equal(decoded.Signature, signature) {
+		t.Fatalf("priority validation signature decode: err=%v", err)
+	}
+}
+
+func TestCVValidationResultPublicationQueuesControlFanout(t *testing.T) {
+	service := &cvAPDBNetworkServiceV2{
+		ctx:              context.Background(),
+		cfg:              cvAPDBNetworkServiceConfigV2{LocalNode: 2, OldRoster: []int{0, 1, 2, 3}},
+		outbound:         make(chan cvOutboundMessageV2, 4),
+		priorityOutbound: make(chan cvOutboundMessageV2, 4),
+	}
+	resultWire := []byte("canonical-result-fixture")
+	if err := service.publishValidationResultV2(resultWire); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.outbound) != 0 || len(service.priorityOutbound) != 3 {
+		t.Fatalf("validation result queues: normal=%d priority=%d", len(service.outbound), len(service.priorityOutbound))
+	}
+	seen := make(map[int]struct{}, 3)
+	for range 3 {
+		message := <-service.priorityOutbound
+		if message.tag != cvTagValidationResultV2 || !bytes.Equal(message.payload, resultWire) || message.to == 2 {
+			t.Fatalf("validation result message: to=%d tag=%s payload=%q", message.to, message.tag, message.payload)
+		}
+		seen[message.to] = struct{}{}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("validation result recipients=%v", seen)
+	}
+}
+
+func TestCVDecisionShareFanoutUsesPriorityOutbound(t *testing.T) {
+	service := &cvAPDBNetworkServiceV2{
+		ctx:              context.Background(),
+		priorityOutbound: make(chan cvOutboundMessageV2, 4),
+		outbound:         make(chan cvOutboundMessageV2, 4),
+	}
+	payload := []byte("decision-share")
+	service.sendPriorityFanoutV2([]int{0, 1, 2}, 1, cvTagDecisionShareV2, payload)
+	if len(service.outbound) != 0 || len(service.priorityOutbound) != 2 {
+		t.Fatalf("decision share queues: normal=%d priority=%d", len(service.outbound), len(service.priorityOutbound))
+	}
+	for range 2 {
+		message := <-service.priorityOutbound
+		if message.tag != cvTagDecisionShareV2 || !bytes.Equal(message.payload, payload) || message.to == 1 {
+			t.Fatalf("decision share message: to=%d tag=%s payload=%q", message.to, message.tag, message.payload)
+		}
+	}
+}
 
 func TestCVSendRecoveryRequestsWithRetryV2RetriesOnlyMissingHolders(t *testing.T) {
 	recipients := []int{0, 1, 2, 3}
@@ -97,7 +264,7 @@ func TestCVSendRecoveryRequestsWithRetryV2StopsOnContextCancellation(t *testing.
 	}
 }
 
-func TestCVVerifiedCatalogPrewarmStartsOnlyOnceForEligibleProposer(t *testing.T) {
+func TestCVVerifiedCatalogPrewarmStartsForEligibleProposers(t *testing.T) {
 	_, public := cvAgreementObjectV2Fixture(t)
 	proposers, validators, err := cvDeriveEligibilitySamplesV2(
 		public.OldCommittee, public.EligibilityCoin.Value,
@@ -106,7 +273,17 @@ func TestCVVerifiedCatalogPrewarmStartsOnlyOnceForEligibleProposer(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	eligible := proposers[0]
+	primary := proposers[0]
+	backupOnly := -1
+	for _, proposer := range proposers[1:] {
+		if !cvContainsID(validators, proposer) {
+			backupOnly = proposer
+			break
+		}
+	}
+	if backupOnly < 0 {
+		t.Fatal("test fixture did not include a backup-only proposer")
+	}
 	// The default prewarm mode also covers sampled validators, so the negative
 	// case must be a member outside both samples.
 	nonEligible := -1
@@ -130,18 +307,26 @@ func TestCVVerifiedCatalogPrewarmStartsOnlyOnceForEligibleProposer(t *testing.T)
 			coinSigner: public.CoinSigner,
 		}
 	}
-	eligibleService := newService(eligible)
-	if err := eligibleService.setEligibilityCoin(public.EligibilityCoin); err != nil {
+	primaryService := newService(primary)
+	if err := primaryService.setEligibilityCoin(public.EligibilityCoin); err != nil {
 		t.Fatal(err)
 	}
-	if !eligibleService.verifiedCatalogPrewarm {
-		t.Fatal("eligible proposer did not start verified catalog prewarm")
+	if !primaryService.verifiedCatalogPrewarm {
+		t.Fatal("primary proposer did not start verified catalog prewarm")
 	}
-	if err := eligibleService.setEligibilityCoin(public.EligibilityCoin); err != nil {
+	if err := primaryService.setEligibilityCoin(public.EligibilityCoin); err != nil {
 		t.Fatal(err)
 	}
-	if !eligibleService.verifiedCatalogPrewarm {
-		t.Fatal("eligible proposer lost verified catalog prewarm state")
+	if !primaryService.verifiedCatalogPrewarm {
+		t.Fatal("primary proposer lost verified catalog prewarm state")
+	}
+
+	backupService := newService(backupOnly)
+	if err := backupService.setEligibilityCoin(public.EligibilityCoin); err != nil {
+		t.Fatal(err)
+	}
+	if !backupService.verifiedCatalogPrewarm {
+		t.Fatal("eligible backup proposer did not start verified catalog prewarm")
 	}
 
 	nonEligibleService := newService(nonEligible)
@@ -153,10 +338,115 @@ func TestCVVerifiedCatalogPrewarmStartsOnlyOnceForEligibleProposer(t *testing.T)
 	}
 }
 
+func TestCVValidationRequestExactRetryUsesCachedSignatureWire(t *testing.T) {
+	request := []byte("verified-validation-request")
+	statementKey := "statement-key"
+	shareWire := []byte("cached-validation-signature")
+	from := 3
+	requestKey := fmt.Sprintf("%d:%x", from, hashBytes(request))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := &cvAPDBNetworkServiceV2{
+		ctx: ctx,
+		cfg: cvAPDBNetworkServiceConfigV2{LeafContext: &cvLeafContextV2{}, Receivers: &cvReceiverKeyMaterialV2{},
+			Validators: &cvValidatorKeyMaterialV2{}},
+		validationRequestStatements: map[string]string{requestKey: statementKey},
+		validationLocalShareWires:   map[string][]byte{statementKey: shareWire},
+		priorityOutbound:            make(chan cvOutboundMessageV2, 2),
+	}
+
+	service.handleValidationRequest(Message{From: from, Body: request})
+	select {
+	case sent := <-service.priorityOutbound:
+		if sent.to != from || sent.tag != cvTagValidationSignatureV2 || !bytes.Equal(sent.payload, shareWire) {
+			t.Fatal("validation request retry returned the wrong cached signature")
+		}
+	default:
+		t.Fatal("validation request exact retry missed cached signature")
+	}
+
+	mutated := append([]byte(nil), request...)
+	mutated[0] ^= 1
+	service.handleValidationRequest(Message{From: from, Body: mutated})
+	service.handleValidationRequest(Message{From: from + 1, Body: request})
+	select {
+	case <-service.priorityOutbound:
+		t.Fatal("mutated or different-sender validation request hit exact retry cache")
+	default:
+	}
+}
+
+func TestCVPoolOfferExactRetryUsesCachedShareWire(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	from := 2
+	poolWire := []byte("verified-pool-wire")
+	shareWire := []byte("cached-pool-share")
+	service := &cvAPDBNetworkServiceV2{
+		ctx: ctx,
+		poolSlots: map[int]*cvNetworkPoolSlotV2{from: {
+			poolWire: append([]byte(nil), poolWire...), localShareWire: append([]byte(nil), shareWire...),
+		}},
+		outbound: make(chan cvOutboundMessageV2, 2),
+	}
+
+	service.handlePoolOffer(Message{From: from, Body: poolWire})
+	select {
+	case sent := <-service.outbound:
+		if sent.to != from || sent.tag != cvTagPoolCertShareV2 || !bytes.Equal(sent.payload, shareWire) {
+			t.Fatal("pool offer retry returned the wrong cached share")
+		}
+	default:
+		t.Fatal("pool offer exact retry missed cached share")
+	}
+
+	mutated := append([]byte(nil), poolWire...)
+	mutated[0] ^= 1
+	service.handlePoolOffer(Message{From: from, Body: mutated})
+	service.handlePoolOffer(Message{From: from + 1, Body: poolWire})
+	select {
+	case <-service.outbound:
+		t.Fatal("mutated or different-sender pool offer hit exact retry cache")
+	default:
+	}
+}
+
+func TestCVValidatorPrewarmModeDefaultsAndOverrides(t *testing.T) {
+	t.Setenv("RLADKR_VALIDATOR_PREWARM", "")
+	for _, test := range []struct {
+		rosterSize int
+		want       cvValidatorPrewarmModeV2
+	}{
+		{rosterSize: 16, want: cvValidatorPrewarmFullV2},
+		{rosterSize: 31, want: cvValidatorPrewarmFullV2},
+		{rosterSize: 32, want: cvValidatorPrewarmFullV2},
+		{rosterSize: 128, want: cvValidatorPrewarmFullV2},
+		{rosterSize: 129, want: cvValidatorPrewarmRecoverV2},
+	} {
+		if got := cvValidatorPrewarmModeFromEnvV2(test.rosterSize); got != test.want {
+			t.Fatalf("validator prewarm default for n=%d: got %d, want %d", test.rosterSize, got, test.want)
+		}
+	}
+
+	for value, want := range map[string]cvValidatorPrewarmModeV2{
+		"full":    cvValidatorPrewarmFullV2,
+		"recover": cvValidatorPrewarmRecoverV2,
+		"off":     cvValidatorPrewarmOffV2,
+	} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("RLADKR_VALIDATOR_PREWARM", value)
+			if got := cvValidatorPrewarmModeFromEnvV2(64); got != want {
+				t.Fatalf("validator prewarm override %q: got %d, want %d", value, got, want)
+			}
+		})
+	}
+}
+
 func TestCVAPDBNetworkServiceV2BuildsVCertAfterRecovery(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping real APVSS aggregate validation network test in short mode")
 	}
+	t.Setenv("RLADKR_VALIDATION_FIRST_WAVE_GRACE_MS", "10000")
 	first, leafContext, receivers, validators := cvAllACKLeafV2Fixture(t)
 	cfg := cvV2ParamsTestConfig()
 	params, err := cvDeriveV2Params(cfg)
@@ -289,16 +579,68 @@ func TestCVAPDBNetworkServiceV2BuildsVCertAfterRecovery(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	firstWave, deferredWave := cvValidationRequestWavesV2(
+		services[proposer].validatorSample, params.validatorThreshold, proposer,
+	)
 	for _, member := range cfg.OldCommittee {
-		if cvContainsID(services[proposer].validatorSample, member) {
+		if cvContainsID(firstWave, member) {
 			if got := transport.sentCountFromTo(cvTagValidationRequestV2, proposer, member); got < 1 {
-				t.Fatalf("validator %d received %d validation requests, want at least one", member, got)
+				t.Fatalf("first-wave validator %d received %d validation requests, want at least one", member, got)
+			}
+			continue
+		}
+		if cvContainsID(deferredWave, member) {
+			if got := transport.sentCountFromTo(cvTagValidationRequestV2, proposer, member); got != 0 {
+				t.Fatalf("deferred validator %d received %d validation requests after first-wave quorum", member, got)
 			}
 			continue
 		}
 		if got := transport.sentCountFromTo(cvTagValidationRequestV2, proposer, member); got != 0 {
 			t.Fatalf("non-validator %d received %d validation requests, want none", member, got)
 		}
+	}
+}
+
+func TestCVValidationRequestWavesV2RotateAndCoverSample(t *testing.T) {
+	sample := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	first, deferred := cvValidationRequestWavesV2(sample, 4, 3)
+	if !equalInts(first, []int{3, 4, 5, 6, 7, 8}) || !equalInts(deferred, []int{9, 0, 1, 2}) {
+		t.Fatalf("validation waves first=%v deferred=%v", first, deferred)
+	}
+	covered := append(append([]int(nil), first...), deferred...)
+	if len(covered) != len(sample) || len(sortedUnique(covered)) != len(sample) {
+		t.Fatalf("validation waves do not cover sample exactly once: %v", covered)
+	}
+	first, deferred = cvValidationRequestWavesV2(sample, 9, 8)
+	if len(first) != len(sample) || len(deferred) != 0 {
+		t.Fatalf("capped validation waves first=%v deferred=%v", first, deferred)
+	}
+}
+
+func TestCVValidationRequestWaveScheduleStopsOrExpands(t *testing.T) {
+	first := []int{3, 4, 5, 6, 7, 8}
+	deferred := []int{9, 0, 1, 2}
+	ready := make(chan struct{}, 1)
+	var sent [][]int
+	complete, err := cvSendValidationRequestWavesV2(
+		context.Background(), context.Background(), ready, first, deferred, time.Second,
+		func(recipients []int) {
+			sent = append(sent, append([]int(nil), recipients...))
+			ready <- struct{}{}
+		},
+	)
+	if err != nil || !complete || len(sent) != 1 || !equalInts(sent[0], first) {
+		t.Fatalf("completed validation schedule sent=%v complete=%t err=%v", sent, complete, err)
+	}
+
+	ready = make(chan struct{}, 1)
+	sent = nil
+	complete, err = cvSendValidationRequestWavesV2(
+		context.Background(), context.Background(), ready, first, deferred, time.Millisecond,
+		func(recipients []int) { sent = append(sent, append([]int(nil), recipients...)) },
+	)
+	if err != nil || complete || len(sent) != 2 || !equalInts(sent[0], first) || !equalInts(sent[1], deferred) {
+		t.Fatalf("expanded validation schedule sent=%v complete=%t err=%v", sent, complete, err)
 	}
 }
 
@@ -571,9 +913,13 @@ func TestCVAPDBNetworkServiceV2LockAndRecoverOverAuthenticatedRouter(t *testing.
 		t.Fatalf("component recovery sent %d requests, want all %d holders", got, len(cfg.OldCommittee))
 	}
 
+	payloadDigest, err := cvAggregatePayloadDigestV2(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
 	header := cvAggregateHeaderV2{
 		ContextDigest: contextDigest, ProposerID: proposer, PoolDigest: poolDigest, SelectionDigest: selectionDigest,
-		AggregateDigest: hashBytes([]byte("network aggregate")), PayloadDigest: hashBytes(payload),
+		AggregateDigest: hashBytes([]byte("network aggregate")), PayloadDigest: payloadDigest,
 		APDBInstance: instance, APDBRoot: encoded.root,
 	}
 	decisionStatement, err := cvDecisionStatementV2(contextDigest, &header, lock)
@@ -593,9 +939,255 @@ func TestCVAPDBNetworkServiceV2LockAndRecoverOverAuthenticatedRouter(t *testing.
 	if err != nil || !bytes.Equal(aggregateRecovered, payload) {
 		t.Fatalf("network aggregate recovery: %v", err)
 	}
-	if got := transport.sentCount(cvTagAggregateRecoverGetV2); got != len(cfg.OldCommittee) {
-		t.Fatalf("aggregate recovery sent %d requests, want all %d holders", got, len(cfg.OldCommittee))
+	wantAggregateRequests := min(len(cfg.OldCommittee), public.Params.recoveryThreshold+cvAggregateRecoveryFirstWaveExtraV2)
+	if got := transport.sentCount(cvTagAggregateRecoverGetV2); got != wantAggregateRequests {
+		t.Fatalf("aggregate recovery sent %d requests, want rotated first wave %d", got, wantAggregateRequests)
 	}
+	if got := transport.sentCount(cvTagAggregatePayloadGetV2); got != 1 {
+		t.Fatalf("aggregate recovery fast path sent %d requests without a cache, want one before fallback", got)
+	}
+
+	providers := services[localReceiver].aggregatePayloadPullProvidersV2(&handoff)
+	if len(providers) == 0 || services[providers[0]] == nil {
+		t.Fatalf("aggregate payload pull has no local test provider: %v", providers)
+	}
+	if err := services[providers[0]].rememberVerifiedAggregatePayloadV2(instance, lock.Root, payload); err != nil {
+		t.Fatal(err)
+	}
+	beforeFallbackRequests := transport.sentCount(cvTagAggregateRecoverGetV2)
+	aggregateRecovered, err = services[localReceiver].RecoverAggregate(ctx, request, nil)
+	if err != nil || !bytes.Equal(aggregateRecovered, payload) {
+		t.Fatalf("network aggregate cached payload pull: %v", err)
+	}
+	if got := transport.sentCount(cvTagAggregateRecoverGetV2); got != beforeFallbackRequests {
+		t.Fatalf("cached aggregate payload pull issued %d fallback requests", got-beforeFallbackRequests)
+	}
+	if got := transport.sentCount(cvTagAggregatePayloadV2); got != 1 {
+		t.Fatalf("cached aggregate payload pull received %d payload responses, want one", got)
+	}
+}
+
+func TestCVAggregatePayloadResponseV2CanonicalFraming(t *testing.T) {
+	instance := hashBytes([]byte("aggregate payload instance"))
+	payload := []byte("canonical aggregate payload")
+	wire, err := cvAggregatePayloadResponseV2CanonicalBytes(instance, payload, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotInstance, gotPayload, err := cvDecodeAggregatePayloadResponseV2(wire, 1024)
+	if err != nil || !bytes.Equal(gotInstance, instance) || !bytes.Equal(gotPayload, payload) {
+		t.Fatalf("decode aggregate payload response: instance=%x payload=%q err=%v", gotInstance, gotPayload, err)
+	}
+	if _, _, err := cvDecodeAggregatePayloadResponseV2(append(wire, 0), 1024); err == nil {
+		t.Fatal("accepted non-canonical aggregate payload response")
+	}
+}
+
+func TestCVAggregatePayloadPullV2RequiresOriginalARCRoot(t *testing.T) {
+	instance := hashBytes([]byte("aggregate pull root instance"))
+	payload := []byte("aggregate pull root payload")
+	encoded, err := cvAPDBEncodeV2(instance, payload, 2, 4, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := cvAggregatePayloadDigestV2(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := &cvAPDBNetworkServiceV2{cfg: cvAPDBNetworkServiceConfigV2{
+		DataShards: 2, TotalShards: 4, ShardBytes: encoded.shardBytes, MaximumPayload: 1024,
+	}}
+	handoff := &cvHandoffV2{
+		Header: cvAggregateHeaderV2{PayloadDigest: digest},
+		ARC:    cvAPDBLockV2{InstanceDigest: instance, Root: append([]byte(nil), encoded.root...)},
+	}
+	if err := service.validatePulledAggregatePayloadV2(handoff, payload, nil); err != nil {
+		t.Fatalf("valid pulled aggregate payload: %v", err)
+	}
+	handoff.ARC.Root[0] ^= 1
+	if err := service.validatePulledAggregatePayloadV2(handoff, payload, nil); err == nil {
+		t.Fatal("accepted pulled aggregate payload under a different ARC root")
+	}
+}
+
+func TestCVRotatedAggregateRecoveryFirstWaveV2(t *testing.T) {
+	recipients := []int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}
+	got := cvRotatedAggregateRecoveryFirstWaveV2(recipients, 7, 3)
+	want := []int{3, 4, 5, 6, 7, 8, 9}
+	if !equalInts(got, want) {
+		t.Fatalf("rotated aggregate wave = %v, want %v", got, want)
+	}
+	if gotAll := cvRotatedAggregateRecoveryFirstWaveV2(recipients, 20, 8); len(gotAll) != len(recipients) ||
+		len(sortedUnique(gotAll)) != len(recipients) {
+		t.Fatalf("capped aggregate wave = %v, want every holder once", gotAll)
+	}
+}
+
+func TestCVAggregateRecoveryCancelBindsReceiverAndRequest(t *testing.T) {
+	request := []byte("authorized aggregate recovery request")
+	wire, err := cvAggregateRecoveryCancelV2CanonicalBytes(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := cvDecodeAggregateRecoveryCancelV2(wire)
+	if err != nil || digest != string(hashBytes(request)) {
+		t.Fatalf("decode aggregate recovery cancel: digest=%x err=%v", []byte(digest), err)
+	}
+	if _, err := cvDecodeAggregateRecoveryCancelV2(append(wire, 0)); err == nil {
+		t.Fatal("accepted non-canonical aggregate recovery cancel")
+	}
+
+	service := &cvAPDBNetworkServiceV2{
+		aggregateRecoveryActiveV2: make(map[cvAggregateRecoveryRequestKeyV2]bool),
+	}
+	owner := cvAggregateRecoveryRequestKeyV2{receiver: 10, digest: digest}
+	other := cvAggregateRecoveryRequestKeyV2{receiver: 11, digest: digest}
+	if !service.registerAggregateRecoveryRequestV2(owner) {
+		t.Fatal("failed to register aggregate recovery request")
+	}
+	service.cancelAggregateRecoveryRequestV2(other)
+	if service.aggregateRecoveryRequestCanceledV2(owner) {
+		t.Fatal("another receiver canceled the owner's aggregate recovery")
+	}
+	service.cancelAggregateRecoveryRequestV2(owner)
+	if !service.aggregateRecoveryRequestCanceledV2(owner) {
+		t.Fatal("owner's aggregate recovery cancel was ignored")
+	}
+}
+
+func TestCVRecoveryWaveStopsAfterThresholdReady(t *testing.T) {
+	ready := make(chan struct{}, 1)
+	var waves [][]int
+	completed, err := cvSendRecoveryRequestsWithWavesV2(
+		context.Background(), context.Background(), ready,
+		[]int{0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, 4, 1, func(int) time.Duration { return 0 },
+		[]int{3, 4, 5, 6, 7, 8, 9}, time.Millisecond,
+		func(targets []int) []cvFanoutSendResultV2 {
+			waves = append(waves, append([]int(nil), targets...))
+			ready <- struct{}{}
+			results := make([]cvFanoutSendResultV2, len(targets))
+			for i, target := range targets {
+				results[i] = cvFanoutSendResultV2{recipient: target, wireBytes: 1}
+			}
+			return results
+		}, nil,
+	)
+	if err != nil || !completed || len(waves) != 1 || !equalInts(waves[0], []int{3, 4, 5, 6, 7, 8, 9}) {
+		t.Fatalf("recovery waves=%v completed=%t err=%v", waves, completed, err)
+	}
+}
+
+func TestCVComponentRecoveryDealerFirstStopsBeforeHolderWave(t *testing.T) {
+	ready := make(chan struct{}, 1)
+	var sent [][]int
+	completed, err := cvSendRecoveryRequestsWithScheduleV2(
+		context.Background(), context.Background(), ready, []int{0, 1, 2, 3, 4, 5}, 3, 1,
+		func(int) time.Duration { return 0 },
+		[]cvRecoveryRequestWaveV2{
+			{recipients: []int{2}, responseGrace: time.Second, waitAfterSend: true},
+			{recipients: []int{3, 4, 5, 0}, responseGrace: time.Second},
+		},
+		func(targets []int) []cvFanoutSendResultV2 {
+			sent = append(sent, append([]int(nil), targets...))
+			ready <- struct{}{}
+			return successfulCVFanoutResultsV2(targets)
+		}, nil,
+	)
+	if err != nil || !completed || len(sent) != 1 || !equalInts(sent[0], []int{2}) {
+		t.Fatalf("dealer-first sends=%v completed=%t err=%v", sent, completed, err)
+	}
+}
+
+func TestCVComponentRecoveryDealerFirstExpandsToHolderWave(t *testing.T) {
+	ready := make(chan struct{}, 1)
+	var sent [][]int
+	completed, err := cvSendRecoveryRequestsWithScheduleV2(
+		context.Background(), context.Background(), ready, []int{0, 1, 2, 3, 4, 5}, 3, 1,
+		func(int) time.Duration { return 0 },
+		[]cvRecoveryRequestWaveV2{
+			{recipients: []int{2}, responseGrace: time.Millisecond, waitAfterSend: true},
+			{recipients: []int{3, 4, 5, 0}, responseGrace: time.Second},
+		},
+		func(targets []int) []cvFanoutSendResultV2 {
+			sent = append(sent, append([]int(nil), targets...))
+			if len(sent) == 2 {
+				ready <- struct{}{}
+			}
+			return successfulCVFanoutResultsV2(targets)
+		}, nil,
+	)
+	if err != nil || !completed || len(sent) != 2 || !equalInts(sent[0], []int{2}) ||
+		!equalInts(sent[1], []int{3, 4, 5, 0}) {
+		t.Fatalf("dealer-first fallback sends=%v completed=%t err=%v", sent, completed, err)
+	}
+}
+
+func TestCVComponentRecoveryDealerFirstFallsBackAfterHolderFailure(t *testing.T) {
+	ready := make(chan struct{}, 1)
+	var sent [][]int
+	completed, err := cvSendRecoveryRequestsWithScheduleV2(
+		context.Background(), context.Background(), ready, []int{0, 1, 2, 3, 4, 5}, 3, 1,
+		func(int) time.Duration { return 0 },
+		[]cvRecoveryRequestWaveV2{
+			{recipients: []int{2}, responseGrace: time.Millisecond, waitAfterSend: true},
+			{recipients: []int{3, 4, 5}, responseGrace: time.Millisecond},
+		},
+		func(targets []int) []cvFanoutSendResultV2 {
+			sent = append(sent, append([]int(nil), targets...))
+			results := successfulCVFanoutResultsV2(targets)
+			if len(sent) == 2 {
+				for i := range results {
+					results[i].err = fmt.Errorf("holder unavailable")
+				}
+			}
+			return results
+		}, nil,
+	)
+	if err != nil || completed || len(sent) != 3 || !equalInts(sent[2], []int{0, 1, 3, 4, 5}) {
+		t.Fatalf("dealer-first final fallback sends=%v completed=%t err=%v", sent, completed, err)
+	}
+}
+
+func TestCVComponentRecoveryScheduleEnvironment(t *testing.T) {
+	t.Setenv("RLADKR_COMPONENT_RECOVERY_SCHEDULE", "dealer-first")
+	t.Setenv("RLADKR_COMPONENT_DIRECT_GRACE_MS", "17")
+	t.Setenv("RLADKR_COMPONENT_DEALER_RESPONSE", "drop")
+	if got := CVComponentRecoverySchedule(); got != cvComponentRecoveryDealerFirstV2 {
+		t.Fatalf("schedule=%q, want dealer-first", got)
+	}
+	if got := CVComponentDirectGrace(); got != 17*time.Millisecond {
+		t.Fatalf("direct grace=%v, want 17ms", got)
+	}
+	if got := CVComponentDealerResponseMode(); got != cvComponentDealerResponseDropV2 {
+		t.Fatalf("dealer response=%q, want drop", got)
+	}
+	t.Setenv("RLADKR_COMPONENT_RECOVERY_SCHEDULE", "invalid")
+	t.Setenv("RLADKR_COMPONENT_DIRECT_GRACE_MS", "invalid")
+	t.Setenv("RLADKR_COMPONENT_DEALER_RESPONSE", "invalid")
+	if got := CVComponentRecoverySchedule(); got != cvComponentRecoveryDealerFirstV2 {
+		t.Fatalf("invalid schedule=%q, want dealer-first", got)
+	}
+	if got := CVComponentDirectGrace(); got != cvComponentDirectGraceDefaultV2 {
+		t.Fatalf("invalid direct grace=%v, want %v", got, cvComponentDirectGraceDefaultV2)
+	}
+	if got := CVComponentDirectGraceForCommittee(32); got != cvComponentDirectGraceLargeV2 {
+		t.Fatalf("invalid n32 direct grace=%v, want %v", got, cvComponentDirectGraceLargeV2)
+	}
+	if got := CVComponentDealerResponseMode(); got != cvComponentDealerResponseNormalV2 {
+		t.Fatalf("invalid dealer response=%q, want normal", got)
+	}
+	t.Setenv("RLADKR_COMPONENT_RECOVERY_SCHEDULE", "hedged")
+	if got := CVComponentRecoverySchedule(); got != cvComponentRecoveryHedgedV2 {
+		t.Fatalf("explicit schedule=%q, want hedged", got)
+	}
+}
+
+func successfulCVFanoutResultsV2(targets []int) []cvFanoutSendResultV2 {
+	results := make([]cvFanoutSendResultV2, len(targets))
+	for i, target := range targets {
+		results[i] = cvFanoutSendResultV2{recipient: target, wireBytes: 1}
+	}
+	return results
 }
 
 func TestCVAPDBNetworkServiceV2RejectsMissingAuthentication(t *testing.T) {

@@ -90,6 +90,14 @@ func TestValidateCVEpochConfigRequiresDeployableProfile(t *testing.T) {
 	}
 }
 
+func TestValidateConfigRejectsLegacyAblationMode(t *testing.T) {
+	cfg := cvV2ParamsTestConfig()
+	cfg.AblationMode = "no-agclock"
+	if err := ValidateConfig(cfg); err == nil {
+		t.Fatal("CV V2 accepted legacy no-agclock ablation mode")
+	}
+}
+
 func TestNormalizeConfigDefaultsToFeldmanBatchFallback(t *testing.T) {
 	cfg := NormalizeConfig(Config{FOld: 1, FNew: 1})
 	if cfg.APVSSMode != APVSSModeACKFallback ||

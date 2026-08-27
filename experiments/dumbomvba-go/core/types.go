@@ -38,6 +38,7 @@ const (
 	TagMVBAPDFinish    ProtocolTag = "MVBA_PD_FINISH"
 	TagMVBARCPrepare   ProtocolTag = "MVBA_RC_PREPARE"
 	TagMVBARC          ProtocolTag = "MVBA_RC"
+	TagMVBARCPull      ProtocolTag = "MVBA_RC_PULL"
 	TagMVBAABA         ProtocolTag = "MVBA_ABA"
 	TagMVBAABACoin     ProtocolTag = "MVBA_ABA_COIN"
 	TagMVBAABADecision ProtocolTag = "MVBA_ABA_DECISION"

@@ -946,7 +946,9 @@ func (s *cvComponentService) MaterializeAndCollectARC(ctx context.Context, descr
 	metrics.headerToken = time.Since(phaseStart)
 	s.aggregateBuildMu.Unlock()
 	aggregateBuildLocked = false
-	pending := &cvPendingARCShare{values: make(chan cvARCShare, n), certificates: make(chan []byte, 1)}
+	pending := &cvPendingARCShare{
+		values: make(chan cvARCShare, n), certificates: make(chan []byte, 1), accepted: make(map[int]struct{}, n),
+	}
 	s.mu.Lock()
 	if _, exists := s.pendingARCs[key]; exists {
 		s.mu.Unlock()
@@ -968,7 +970,7 @@ func (s *cvComponentService) MaterializeAndCollectARC(ctx context.Context, descr
 		}
 		s.mu.Unlock()
 	}()
-	oldOrder := sortedUnique(s.cfg.OldCommittee)
+	oldOrder := s.oldCommitteeOrder()
 	offerWire, err := cvAggregateManifestOfferCanonicalBytes(&cvAggregateManifestOffer{
 		header: header, descriptors: selectedDescriptors, readyRoot: readyCertificate.root, root: manifestRoot,
 	})
@@ -1007,6 +1009,9 @@ func (s *cvComponentService) MaterializeAndCollectARC(ctx context.Context, descr
 		if selfErr != nil {
 			return nil, selfErr
 		}
+		s.mu.Lock()
+		pending.accepted[s.localNode] = struct{}{}
+		s.mu.Unlock()
 		pending.values <- cvARCShare{holder: s.localNode, headerDigest: append([]byte(nil), headerDigest...), signature: selfSig}
 	}
 	threshold := n - s.cfg.FOld
@@ -1069,6 +1074,18 @@ func (s *cvComponentService) handleAggregateOffer(msg Message) {
 	if cvPerfCountersEnabled {
 		cvPerfCounters.aggregateOffers.Add(1)
 	}
+	responseKey := fmt.Sprintf("%d:%x", msg.From, hashBytes(msg.Body))
+	s.mu.Lock()
+	cached := append([]byte(nil), s.localARCShareWires[responseKey]...)
+	s.mu.Unlock()
+	if len(cached) != 0 {
+		s.backgroundWG.Add(1)
+		go func() {
+			defer s.backgroundWG.Done()
+			_ = s.send(msg.From, cvTagARCShare, cached)
+		}()
+		return
+	}
 	s.backgroundWG.Add(1)
 	go func() {
 		defer s.backgroundWG.Done()
@@ -1102,17 +1119,30 @@ func (s *cvComponentService) handleAggregateOffer(msg Message) {
 			return
 		}
 		s.mu.Unlock()
-		s.handleAggregateManifestOffer(msg, manifest)
+		s.handleAggregateManifestOfferWithResponseKey(msg, manifest, responseKey)
 	}()
 }
 
 func (s *cvComponentService) handleAggregateManifestOffer(msg Message, offer *cvAggregateManifestOffer) {
+	responseKey := fmt.Sprintf("%d:%x", msg.From, hashBytes(msg.Body))
+	s.handleAggregateManifestOfferWithResponseKey(msg, offer, responseKey)
+}
+
+func (s *cvComponentService) handleAggregateManifestOfferWithResponseKey(
+	msg Message, offer *cvAggregateManifestOffer, responseKey string,
+) {
 	if offer == nil {
 		return
 	}
 	key := fmt.Sprintf("%x", digestAggHeaderForLock(offer.header))
 	processingKey := fmt.Sprintf("%s/%d", key, msg.From)
 	s.mu.Lock()
+	if cached := s.localARCShareWires[responseKey]; len(cached) != 0 {
+		shareWire := append([]byte(nil), cached...)
+		s.mu.Unlock()
+		_ = s.send(msg.From, cvTagARCShare, shareWire)
+		return
+	}
 	if _, exists := s.processingOffers[processingKey]; exists {
 		s.mu.Unlock()
 		return
@@ -1124,7 +1154,7 @@ func (s *cvComponentService) handleAggregateManifestOffer(msg Message, offer *cv
 		delete(s.processingOffers, processingKey)
 		s.mu.Unlock()
 	}()
-	oldOrder := sortedUnique(s.cfg.OldCommittee)
+	oldOrder := s.oldCommitteeOrder()
 	index := sort.SearchInts(oldOrder, s.localNode)
 	if index >= len(oldOrder) || oldOrder[index] != s.localNode {
 		return
@@ -1152,6 +1182,12 @@ func (s *cvComponentService) handleAggregateManifestOffer(msg Message, offer *cv
 	}
 	shareWire, err := cvARCShareCanonicalBytes(&cvARCShare{holder: s.localNode, headerDigest: artifact.headerDigest, signature: sig})
 	if err == nil {
+		s.mu.Lock()
+		if s.localARCShareWires == nil {
+			s.localARCShareWires = make(map[string][]byte)
+		}
+		s.localARCShareWires[responseKey] = append([]byte(nil), shareWire...)
+		s.mu.Unlock()
 		_ = s.send(msg.From, cvTagARCShare, shareWire)
 	}
 }
@@ -1338,29 +1374,59 @@ func (s *cvComponentService) verifyAggregateManifestForARCLocked(offer *cvAggreg
 
 func (s *cvComponentService) handleARCShare(msg Message) {
 	share, err := cvDecodeARCShare(msg.Body)
-	if err != nil || share.holder != msg.From || !s.cfg.runtime.lockSigner.VerifyShare(
-		share.holder, "RL_AGG_LOCK", share.headerDigest, share.signature,
-	) {
+	if err != nil || share.holder != msg.From {
 		return
 	}
 	key := fmt.Sprintf("%x", share.headerDigest)
 	s.mu.Lock()
 	pending := s.pendingARCs[key]
-	s.mu.Unlock()
 	if pending != nil {
-		select {
-		case pending.values <- *share:
-		default:
+		if _, duplicate := pending.accepted[msg.From]; duplicate {
+			s.mu.Unlock()
+			return
 		}
+	}
+	s.mu.Unlock()
+	if pending == nil || !s.cfg.runtime.lockSigner.VerifyShare(
+		share.holder, "RL_AGG_LOCK", share.headerDigest, share.signature,
+	) {
+		return
+	}
+	s.mu.Lock()
+	if s.pendingARCs[key] != pending {
+		s.mu.Unlock()
+		return
+	}
+	if pending.accepted == nil {
+		pending.accepted = make(map[int]struct{})
+	}
+	if _, duplicate := pending.accepted[msg.From]; duplicate {
+		s.mu.Unlock()
+		return
+	}
+	pending.accepted[msg.From] = struct{}{}
+	s.mu.Unlock()
+	select {
+	case pending.values <- *share:
+	default:
 	}
 }
 
 func (s *cvComponentService) handleARCCertificate(msg Message) {
 	headerDigest, certificate, err := cvDecodeARCCertificate(msg.Body)
-	if err != nil || !s.cfg.runtime.lockSigner.VerifyRecovered("RL_AGG_LOCK", headerDigest, certificate) {
+	if err != nil {
 		return
 	}
 	key := fmt.Sprintf("%x", headerDigest)
+	s.mu.Lock()
+	if existing := s.aggregateCertificates[key]; bytes.Equal(existing, certificate) {
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Unlock()
+	if !s.cfg.runtime.lockSigner.VerifyRecovered("RL_AGG_LOCK", headerDigest, certificate) {
+		return
+	}
 	s.mu.Lock()
 	if existing := s.aggregateCertificates[key]; existing == nil {
 		s.aggregateCertificates[key] = append([]byte(nil), certificate...)
@@ -1469,7 +1535,7 @@ func (s *cvComponentService) RecoverAggregate(ctx context.Context, rlo *AggRLO) 
 	}
 	headerDigest := digestAggHeaderForLock(rlo.Header)
 	key := fmt.Sprintf("%x", headerDigest)
-	requestTargets := sortedUnique(s.cfg.OldCommittee)
+	requestTargets := s.oldCommitteeOrder()
 	pending := &cvPendingRecovery{rlo: cloneAggRLO(rlo), allowed: nodeSet(requestTargets),
 		values: make(chan cvFreshShardArtifact, len(requestTargets))}
 	s.mu.Lock()
@@ -1565,7 +1631,7 @@ func (s *cvComponentService) handleRecoverShard(msg Message) {
 	if err != nil {
 		return
 	}
-	oldOrder := sortedUnique(s.cfg.OldCommittee)
+	oldOrder := s.oldCommitteeOrder()
 	index := sort.SearchInts(oldOrder, msg.From)
 	if index >= len(oldOrder) || oldOrder[index] != msg.From || artifact.shard.index != index {
 		return

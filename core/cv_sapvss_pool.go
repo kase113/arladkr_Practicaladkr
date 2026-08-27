@@ -35,8 +35,9 @@ type cvPoolV2 struct {
 }
 
 type cvPoolCertificateV2 struct {
-	PoolDigest  []byte
-	Certificate []byte
+	PoolDigest    []byte
+	Certificate   []byte
+	canonicalWire []byte
 }
 
 type cvPoolCertificateShareV2 struct {
@@ -329,6 +330,9 @@ func cvPoolCertificateV2CanonicalBytes(certificate *cvPoolCertificateV2) ([]byte
 		len(certificate.Certificate) > cvMaxComponentSignatureBytes {
 		return nil, fmt.Errorf("invalid CV V2 pool certificate")
 	}
+	if len(certificate.canonicalWire) != 0 {
+		return certificate.canonicalWire, nil
+	}
 	var wire bytes.Buffer
 	_ = cvWriteBytes(&wire, []byte(cvPoolCertV2Domain))
 	_ = cvWriteBytes(&wire, certificate.PoolDigest)
@@ -355,6 +359,7 @@ func cvDecodePoolCertificateV2(wire []byte) (*cvPoolCertificateV2, error) {
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 pool certificate")
 	}
+	certificate.canonicalWire = canonical
 	return certificate, nil
 }
 

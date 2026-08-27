@@ -39,7 +39,10 @@ const (
 	cvTagAPDBRecoverStoreV2           = "CV_V2_APDB_RECOVER_STORE"
 	cvTagAPDBRecoverPayloadV2         = "CV_V2_APDB_RECOVER_PAYLOAD"
 	cvTagAggregateRecoverGetV2        = "CV_V2_AGG_RECOVER_GET"
+	cvTagAggregateRecoverCancelV2     = "CV_V2_AGG_RECOVER_CANCEL"
 	cvTagAggregateRecoverStoreV2      = "CV_V2_AGG_RECOVER_STORE"
+	cvTagAggregatePayloadGetV2        = "CV_V2_AGG_PAYLOAD_GET"
+	cvTagAggregatePayloadV2           = "CV_V2_AGG_PAYLOAD"
 	cvTagCoinShareV2                  = "CV_V2_COIN_SHARE"
 	cvTagPoolOfferV2                  = "CV_V2_POOL_OFFER"
 	cvTagPoolCertShareV2              = "CV_V2_POOL_CERT_SHARE"
@@ -54,6 +57,7 @@ const (
 	cvTagComponentRefV2               = "CV_V2_COMPONENT_REF"
 	cvTagCertifiedCandidateV2         = "CV_V2_CERTIFIED_CANDIDATE"
 	cvTagCertifiedCandidateACKV2      = "CV_V2_CERTIFIED_CANDIDATE_ACK"
+	cvTagCertifiedCandidateACKProbeV2 = "CV_V2_CERTIFIED_CANDIDATE_ACK_PROBE"
 	cvTagCertifiedCandidateAnnounceV2 = "CV_V2_CERTIFIED_CANDIDATE_ANNOUNCE"
 	cvTagCertifiedCandidateFetchV2    = "CV_V2_CERTIFIED_CANDIDATE_FETCH"
 	cvTagCertifiedCandidateResponseV2 = "CV_V2_CERTIFIED_CANDIDATE_RESPONSE"
@@ -87,7 +91,10 @@ func cvAllowedNetworkTag(tag string) bool {
 		cvTagAPDBRecoverStoreV2,
 		cvTagAPDBRecoverPayloadV2,
 		cvTagAggregateRecoverGetV2,
+		cvTagAggregateRecoverCancelV2,
 		cvTagAggregateRecoverStoreV2,
+		cvTagAggregatePayloadGetV2,
+		cvTagAggregatePayloadV2,
 		cvTagCoinShareV2,
 		cvTagPoolOfferV2,
 		cvTagPoolCertShareV2,
@@ -99,7 +106,7 @@ func cvAllowedNetworkTag(tag string) bool {
 		cvTagAggregateShareV2:
 		return true
 	case cvTagLaneOfferV2, cvTagLaneACKV2, cvTagComponentRefV2, cvTagCertifiedCandidateV2,
-		cvTagCertifiedCandidateACKV2, cvTagCertifiedCandidateAnnounceV2,
+		cvTagCertifiedCandidateACKV2, cvTagCertifiedCandidateACKProbeV2, cvTagCertifiedCandidateAnnounceV2,
 		cvTagCertifiedCandidateFetchV2, cvTagCertifiedCandidateResponseV2:
 		return true
 	default:
@@ -332,7 +339,7 @@ func (r *cvSAPVSSRouter) route(node int, msg Message) (Message, bool) {
 	}
 	wireBytes := tcpMessageFrameFixedBytes + len(msg.Tag) + len(msg.Body)
 	switch msg.Tag {
-	case apvssTagLaneOffer, cvTagLaneOfferV2, cvTagAggregateRecoverStoreV2:
+	case apvssTagLaneOffer, cvTagLaneOfferV2, cvTagAggregateRecoverStoreV2, cvTagAggregatePayloadV2:
 		if _, ok := r.oldNodes[msg.From]; !ok {
 			return Message{}, false
 		}
@@ -348,7 +355,8 @@ func (r *cvSAPVSSRouter) route(node int, msg Message) (Message, bool) {
 				return Message{}, false
 			}
 		}
-	case apvssTagLaneACK, cvTagLaneACKV2, cvTagAggregateRecoverGetV2:
+	case apvssTagLaneACK, cvTagLaneACKV2, cvTagAggregateRecoverGetV2, cvTagAggregateRecoverCancelV2,
+		cvTagAggregatePayloadGetV2:
 		if _, ok := r.newNodes[msg.From]; !ok {
 			return Message{}, false
 		}

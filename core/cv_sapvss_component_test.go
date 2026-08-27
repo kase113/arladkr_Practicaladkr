@@ -28,6 +28,18 @@ func TestCVComponentDescriptorCodecIsCertificateOnly(t *testing.T) {
 		!bytes.Equal(decoded.certificate, descriptor.certificate) {
 		t.Fatal("compact component descriptor changed the recovered certificate")
 	}
+	decodedLeaf := append([]byte(nil), decoded.leafDigest...)
+	decodedCertificate := append([]byte(nil), decoded.certificate...)
+	for i := range wire {
+		wire[i] ^= 0xff
+	}
+	if !bytes.Equal(decoded.leafDigest, decodedLeaf) || !bytes.Equal(decoded.certificate, decodedCertificate) {
+		t.Fatal("decoded component descriptor aliases the input wire")
+	}
+	wire, err = cvComponentDescriptorCanonicalBytes(descriptor)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Run("invalid dealer", func(t *testing.T) {
 		bad := *descriptor
 		bad.dealer = -1

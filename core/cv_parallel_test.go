@@ -64,6 +64,24 @@ func TestCVComponentRecoveryWorkerBudget(t *testing.T) {
 	}
 }
 
+func TestCVRecoveryServiceWorkerBudget(t *testing.T) {
+	t.Setenv("RLADKR_APDB_RECOVERY_WORKERS", "")
+	if got := cvRecoveryServiceWorkers(4); got != 2 {
+		t.Fatalf("small recovery service workers=%d, want 2", got)
+	}
+	if got := cvRecoveryServiceWorkers(96); got != 6 {
+		t.Fatalf("committee recovery service workers=%d, want 6", got)
+	}
+	t.Setenv("RLADKR_APDB_RECOVERY_WORKERS", "12")
+	if got := cvRecoveryServiceWorkers(96); got != 12 {
+		t.Fatalf("configured recovery service workers=%d, want 12", got)
+	}
+	t.Setenv("RLADKR_APDB_RECOVERY_WORKERS", "99")
+	if got := cvRecoveryServiceWorkers(96); got != 16 {
+		t.Fatalf("capped recovery service workers=%d, want 16", got)
+	}
+}
+
 func TestCVACKSettleGraceV2IsBoundedAndConfigurable(t *testing.T) {
 	t.Setenv("RLADKR_ACK_SETTLE_GRACE_MS", "")
 	if got := cvACKSettleGraceV2(); got != cvDefaultACKSettleGraceV2 {

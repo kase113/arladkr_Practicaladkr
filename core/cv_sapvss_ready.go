@@ -47,6 +47,15 @@ func cvComponentReadyCertificateCanonicalBytes(certificate *cvComponentReadyCert
 	if err != nil || !bytes.Equal(root, certificate.root) {
 		return nil, fmt.Errorf("invalid CV-sAPVSS ReadyCert root")
 	}
+	return cvEncodeComponentReadyCertificate(certificate)
+}
+
+// cvEncodeComponentReadyCertificate serializes a certificate whose root was
+// just computed or independently verified by the caller.
+func cvEncodeComponentReadyCertificate(certificate *cvComponentReadyCertificate) ([]byte, error) {
+	if certificate == nil || certificate.proposer < 0 || len(certificate.root) != 32 {
+		return nil, fmt.Errorf("invalid CV-sAPVSS ReadyCert")
+	}
 	var wire bytes.Buffer
 	_ = cvWriteBytes(&wire, []byte(cvComponentReadyCertificateDomain))
 	cvWriteUint64(&wire, uint64(certificate.proposer))
@@ -61,10 +70,18 @@ func cvComponentReadyCertificateCanonicalBytes(certificate *cvComponentReadyCert
 }
 
 func cvDecodeComponentReadyCertificate(wire []byte, cfg Config) (*cvComponentReadyCertificate, error) {
-	ready := len(cfg.OldCommittee) - cfg.FOld
+	c := NormalizeConfig(cfg)
+	if err := ValidateConfig(c); err != nil {
+		return nil, err
+	}
+	if err := ensureRuntime(&c); err != nil {
+		return nil, err
+	}
+	ready := len(c.OldCommittee) - c.FOld
 	if ready <= 0 {
 		return nil, fmt.Errorf("invalid CV-sAPVSS ReadyCert threshold")
 	}
+	oldMembers := nodeSet(c.OldCommittee)
 	r := newCVWireReader(wire)
 	domain, err := r.bytes(len(cvComponentReadyCertificateDomain))
 	if err != nil || !bytes.Equal(domain, []byte(cvComponentReadyCertificateDomain)) {
@@ -74,7 +91,7 @@ func cvDecodeComponentReadyCertificate(wire []byte, cfg Config) (*cvComponentRea
 	if err != nil || proposer > uint64(^uint(0)>>1) {
 		return nil, fmt.Errorf("invalid CV-sAPVSS ReadyCert proposer")
 	}
-	if _, ok := nodeSet(sortedUnique(cfg.OldCommittee))[int(proposer)]; !ok {
+	if _, ok := oldMembers[int(proposer)]; !ok {
 		return nil, fmt.Errorf("CV-sAPVSS ReadyCert proposer outside old roster")
 	}
 	count, err := r.uint32()
@@ -87,7 +104,9 @@ func cvDecodeComponentReadyCertificate(wire []byte, cfg Config) (*cvComponentRea
 		if err != nil || len(references[i].descriptorWire) == 0 {
 			return nil, fmt.Errorf("invalid CV-sAPVSS ReadyCert descriptor")
 		}
-		references[i].descriptor, err = cvDecodeAndValidateComponentDescriptor(cfg, references[i].descriptorWire)
+		references[i].descriptor, err = cvDecodeAndValidateComponentDescriptorPrepared(
+			&c, references[i].descriptorWire, oldMembers,
+		)
 		if err != nil {
 			return nil, fmt.Errorf("invalid CV-sAPVSS ReadyCert component certificate: %w", err)
 		}
@@ -110,14 +129,33 @@ func cvDecodeComponentReadyCertificate(wire []byte, cfg Config) (*cvComponentRea
 }
 
 func cvBuildComponentReadyCertificate(proposer int, descriptors []*cvComponentDescriptor) (*cvComponentReadyCertificate, error) {
+	return cvBuildComponentReadyCertificateFromValidatedWires(proposer, descriptors, nil)
+}
+
+// cvBuildComponentReadyCertificateFromValidatedWires reuses immutable wires
+// already accepted into the component service. A missing wire falls back to
+// canonical encoding for fixtures and older in-memory state.
+func cvBuildComponentReadyCertificateFromValidatedWires(
+	proposer int, descriptors []*cvComponentDescriptor, descriptorWires [][]byte,
+) (*cvComponentReadyCertificate, error) {
+	if descriptorWires != nil && len(descriptorWires) != len(descriptors) {
+		return nil, fmt.Errorf("invalid CV-sAPVSS ReadyCert descriptor wire cache")
+	}
 	references := make([]cvComponentReadyReference, len(descriptors))
 	for i, descriptor := range descriptors {
 		if descriptor == nil {
 			return nil, fmt.Errorf("nil CV-sAPVSS ReadyCert descriptor")
 		}
-		descriptorWire, err := cvComponentDescriptorCanonicalBytes(descriptor)
-		if err != nil {
-			return nil, err
+		var descriptorWire []byte
+		if descriptorWires != nil {
+			descriptorWire = descriptorWires[i]
+		}
+		if len(descriptorWire) == 0 {
+			var err error
+			descriptorWire, err = cvComponentDescriptorCanonicalBytes(descriptor)
+			if err != nil {
+				return nil, err
+			}
 		}
 		references[i] = cvComponentReadyReference{
 			dealer: descriptor.dealer, leafDigest: append([]byte(nil), descriptor.leafDigest...),
@@ -129,4 +167,18 @@ func cvBuildComponentReadyCertificate(proposer int, descriptors []*cvComponentDe
 		return nil, err
 	}
 	return &cvComponentReadyCertificate{proposer: proposer, references: references, root: root}, nil
+}
+
+func cvBuildComponentReadyCertificateWireFromValidatedWires(
+	proposer int, descriptors []*cvComponentDescriptor, descriptorWires [][]byte,
+) (*cvComponentReadyCertificate, []byte, error) {
+	certificate, err := cvBuildComponentReadyCertificateFromValidatedWires(proposer, descriptors, descriptorWires)
+	if err != nil {
+		return nil, nil, err
+	}
+	wire, err := cvEncodeComponentReadyCertificate(certificate)
+	if err != nil {
+		return nil, nil, err
+	}
+	return certificate, wire, nil
 }

@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"compress/flate"
 	"path/filepath"
 	"testing"
 
@@ -329,6 +330,87 @@ func TestCVLeafV2MixedACKFallbackBuildVerifyAndCodec(t *testing.T) {
 	bad.Fallback = &badFallback
 	if err := cvVerifyAPVSSV2(&bad, context, receivers, validators); err == nil {
 		t.Fatal("accepted mixed CV V2 leaf with mutated fallback range proof")
+	}
+}
+
+func TestCVLeafV2TransportCompressionUsesRealCanonicalLeaf(t *testing.T) {
+	leaf, context, receivers, validators := cvAllACKLeafV2Fixture(t)
+	payload, err := cvLeafV2CanonicalBytes(leaf, receivers, validators)
+	if err != nil {
+		t.Fatal(err)
+	}
+	instance := hashBytes([]byte("real canonical leaf transport compression"))
+	legacy, err := cvAPDBPayloadResponseV2CanonicalBytes(&cvAPDBPayloadResponseV2{
+		InstanceDigest: instance, Payload: payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, err := cvAPDBPayloadResponseV2TransportBytes(&cvAPDBPayloadResponseV2{
+		InstanceDigest: instance, Payload: payload,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := cvDecodeAPDBPayloadResponseV2(transport, len(payload))
+	if err != nil || !bytes.Equal(decoded.Payload, payload) {
+		t.Fatalf("real leaf transport compression round trip: err=%v", err)
+	}
+	t.Logf("real leaf bytes=%d legacy-response=%d transport-response=%d reduction=%.2f%% context=%s",
+		len(payload), len(legacy), len(transport), 100*float64(len(legacy)-len(transport))/float64(len(legacy)), context.SID)
+}
+
+func TestCVLeafV2TransportCompressionAbsorbsDuplicateACKOwnership(t *testing.T) {
+	leaf, context, receivers, validators := cvAllACKLeafV2Fixture(t)
+	var unique, duplicated bytes.Buffer
+	for i := range leaf.Receivers {
+		ack := leaf.Receivers[i].ACK
+		if ack == nil {
+			t.Fatal("all-ACK fixture contains fallback receiver")
+		}
+		proof, err := cvOwnershipProofV2CanonicalBytesAfterValidation(&ack.Ownership, context)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = cvWriteBytes(&unique, proof)
+		_ = cvWriteBytes(&duplicated, proof)
+		_ = cvWriteBytes(&duplicated, proof)
+	}
+	compressedSize := func(input []byte, level int) int {
+		var output bytes.Buffer
+		writer, err := flate.NewWriter(&output, level)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write(input); err != nil {
+			t.Fatal(err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+		return output.Len()
+	}
+	uniqueCompressed := compressedSize(unique.Bytes(), flate.DefaultCompression)
+	duplicatedCompressed := compressedSize(duplicated.Bytes(), flate.DefaultCompression)
+	duplicateRaw := duplicated.Len() - unique.Len()
+	duplicateCompressed := duplicatedCompressed - uniqueCompressed
+	t.Logf("ACK ownership duplicate raw=%d compressed_increment=%d absorption=%.2f%%",
+		duplicateRaw, duplicateCompressed,
+		100*(1-float64(duplicateCompressed)/float64(duplicateRaw)))
+	if duplicateCompressed*20 >= duplicateRaw {
+		t.Fatalf("DEFLATE retained at least 5%% of duplicate ownership bytes: raw=%d compressed=%d",
+			duplicateRaw, duplicateCompressed)
+	}
+	payload, err := cvLeafV2CanonicalBytesAfterValidation(leaf, receivers, validators)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defaultSize := compressedSize(payload, flate.DefaultCompression)
+	bestSize := compressedSize(payload, flate.BestCompression)
+	t.Logf("canonical leaf DEFLATE default=%d best=%d incremental_reduction=%.3f%%",
+		defaultSize, bestSize, 100*float64(defaultSize-bestSize)/float64(defaultSize))
+	if bestSize > defaultSize {
+		t.Fatalf("best DEFLATE unexpectedly larger than default: default=%d best=%d", defaultSize, bestSize)
 	}
 }
 

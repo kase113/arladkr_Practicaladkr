@@ -73,14 +73,32 @@ variable "ami_id" {
 }
 
 variable "instance_count" {
-  description = "One EC2 instance per old-committee node."
+  description = "Physical EC2 instance count for an AWS experiment (maximum 128)."
   type        = number
   default     = 0
 
   validation {
-    condition     = var.instance_count >= 0 && var.instance_count <= 256
-    error_message = "instance_count must be between 0 and 256."
+    condition     = var.instance_count >= 0 && var.instance_count <= 128
+    error_message = "instance_count must be between 0 and 128."
   }
+}
+
+variable "logical_node_ids_by_instance" {
+  description = "Comma-separated logical node IDs hosted by each physical instance. One ID per instance in production."
+  type        = list(string)
+  default     = []
+}
+
+variable "associate_public_ip_address" {
+  description = "Assign public IPv4 to experiment instances. Private SSM mode disables this and uses VPC endpoints."
+  type        = bool
+  default     = false
+}
+
+variable "enable_private_management_endpoints" {
+  description = "Create SSM, SSM Messages, EC2 Messages interface endpoints and an S3 gateway endpoint."
+  type        = bool
+  default     = true
 }
 
 variable "protocol_suite" {
@@ -143,19 +161,32 @@ variable "protocol_public_peer_cidrs" {
   }
 }
 
+variable "protocol_public_cidrs_per_group" {
+  description = "Maximum exact /32 sources placed in one protocol security group."
+  type        = number
+  default     = 48
+
+  validation {
+    condition     = var.protocol_public_cidrs_per_group >= 1 && var.protocol_public_cidrs_per_group <= 60
+    error_message = "protocol_public_cidrs_per_group must be between 1 and 60."
+  }
+}
+
 variable "protocol_public_world_ingress" {
-  description = "Replace per-node /32 protocol rules with one temporary CIDR rule when a large fleet would exceed the SG rule quota."
+  description = "Legacy escape hatch for an explicitly configured non-world CIDR. 0.0.0.0/0 is rejected."
   type        = bool
   default     = false
 }
 
 variable "protocol_public_ingress_cidr" {
-  description = "CIDR used by protocol_public_world_ingress. The protocol ports carry authenticated experiment traffic only."
+  description = "CIDR used by protocol_public_world_ingress. World ingress is deliberately forbidden."
   type        = string
-  default     = "0.0.0.0/0"
+  default     = "192.0.2.0/32"
 
   validation {
-    condition     = can(cidrnetmask(var.protocol_public_ingress_cidr))
-    error_message = "protocol_public_ingress_cidr must be a valid IPv4 CIDR."
+    condition = can(cidrnetmask(var.protocol_public_ingress_cidr)) && (
+      !var.protocol_public_world_ingress || var.protocol_public_ingress_cidr != "0.0.0.0/0"
+    )
+    error_message = "protocol_public_ingress_cidr must be valid and cannot be 0.0.0.0/0."
   }
 }

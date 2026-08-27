@@ -11,11 +11,7 @@ fi
 base_port="${4:-20000}"
 epoch_timeout="${RLADKR_CV_EPOCH_TIMEOUT:-90s}"
 runner_timeout="${RLADKR_CV_RUNNER_TIMEOUT:-$epoch_timeout}"
-# Once the n-f quorum has completed, keep already-started peers alive briefly
-# so scheduler skew during warmup does not turn them into misleading NO_RESULT
-# entries. Quorum remains sufficient for success; this is only a result-settle
-# window for the local multi-process harness.
-quorum_settle_timeout="${RLADKR_CV_QUORUM_SETTLE_TIMEOUT:-15s}"
+runner_timeout_explicit="${RLADKR_CV_RUNNER_TIMEOUT:-}"
 wait_spbc_timeout="${RLADKR_CV_WAIT_SPBC_TIMEOUT:-}"
 # The shared-host harness can finish honest nodes several seconds apart under
 # CPU contention. A one-second route timeout selects the existing ten-second
@@ -45,6 +41,8 @@ lane_workers="${RLADKR_LANE_WORKERS:-2}"
 # quorum change. AWS runners keep their existing n-f readiness behavior.
 mvba_peer_wait_target="${RLADKR_MVBA_PEER_WAIT_TARGET:-all}"
 mvba_peer_wait_ms="${RLADKR_MVBA_PEER_WAIT_MS:-5000}"
+setup_batch_size="${RLADKR_CV_SETUP_BATCH_SIZE:-16}"
+setup_ready_timeout="${RLADKR_CV_SETUP_READY_TIMEOUT:-900s}"
 # Divide a shared host's logical CPUs across its n node processes. The n=16
 # harness benefits measurably from its second SMT worker for curve-heavy leaf
 # verification. On a real one-process-per-host deployment the runtime default
@@ -74,7 +72,7 @@ generated_secret_dir="$root/keys/generated-private"
 log_dir="$root/logs"
 results_file="$root/cluster-results.log"
 
-if (( n <= 0 || f < 0 || n < 3 * f + 1 || epochs <= 0 || runs <= 0 )); then
+if (( n <= 0 || f < 0 || n < 3 * f + 1 || epochs <= 0 || runs <= 0 || setup_batch_size <= 0 )); then
   printf 'invalid committee parameters: n=%s f=%s\n' "$n" "$f" >&2
   exit 2
 fi
@@ -118,7 +116,7 @@ if [[ -d "$root" && -n "$(find "$root" -mindepth 1 -print -quit 2>/dev/null)" ]]
   exit 2
 fi
 
-mkdir -p "$repo_dir/bin" "$public_dir" "$generated_secret_dir" "$root/ready" "$log_dir"
+mkdir -p "$repo_dir/bin" "$public_dir" "$generated_secret_dir" "$root/ready" "$root/setup-ready" "$log_dir"
 mkdir -p "$root/epoch-barrier"
 touch "$results_file"
 bench_timeout_args=()
@@ -158,7 +156,15 @@ printf 'ARLADKR_CV_PORTS component=%s-%s mvba=%s-%s ephemeral=%s-%s\n' \
   "$base_port" "$component_last_port" "$mvba_base_port" "$mvba_last_port" \
   "$ephemeral_low" "$ephemeral_high"
 
-start_at="$(( $(date +%s) + 3 ))"
+# Give larger setup batches time to finish before the synchronized protocol start.
+start_delay=30
+if (( n >= 96 )); then
+  start_delay=120
+  if [[ -z "$runner_timeout_explicit" ]]; then
+    runner_timeout=1200s
+  fi
+fi
+start_at="$(( $(date +%s) + start_delay ))"
 pids=()
 terminate_tree() {
   local pid="$1"
@@ -195,6 +201,7 @@ for ((i=0; i<n; i++)); do
     export RLADKR_LISTENER_READY_DIR="$root/ready"
     export RLADKR_LISTENER_READY_NODE_COUNT="$listener_ready_count"
     export RLADKR_EPOCH_BARRIER_DIR="$root/epoch-barrier"
+    export RLADKR_SETUP_READY_DIR="$root/setup-ready"
     export RLADKR_CV_DEBUG="${RLADKR_CV_DEBUG:-1}"
     export RLADKR_CV_PERF_COUNTERS="${RLADKR_CV_PERF_COUNTERS:-1}"
     export RLADKR_CRYPTO_WORKERS="$crypto_workers"
@@ -231,6 +238,20 @@ for ((i=0; i<n; i++)); do
     fi
   ) >"$log" 2>&1 &
   pids+=("$!")
+  if (( (i + 1) % setup_batch_size == 0 || i + 1 == n )); then
+    batch_start=$((i + 1 - (i % setup_batch_size)))
+    deadline=$(( $(date +%s) + ${setup_ready_timeout%s} ))
+    for ((j=batch_start; j<=i; j++)); do
+      marker="$root/setup-ready/node-$(printf '%06d' "$j").ready"
+      while [[ ! -f "$marker" ]]; do
+        if (( $(date +%s) >= deadline )); then
+          printf 'SETUP_READY_TIMEOUT batch=%s-%s node=%s\n' "$batch_start" "$i" "$j" >&2
+          exit 1
+        fi
+        sleep 1
+      done
+    done
+  fi
 done
 
 status=0
@@ -253,7 +274,10 @@ while ((${#remaining[@]} > 0)); do
     successful_children=$((successful_children + 1))
   fi
   if (( successful_children >= required_nodes )); then
-    sleep "$quorum_settle_timeout"
+    # A successful benchmark result is emitted only after the node has
+    # completed its protocol run. Once n-f such results exist, quorum is
+    # satisfied and waiting for additional nodes would skew collection time
+    # without changing the success decision.
     cleanup_children
     for pid in "${remaining[@]}"; do
       wait "$pid" 2>/dev/null || true

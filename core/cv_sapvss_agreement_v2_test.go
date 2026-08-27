@@ -7,6 +7,60 @@ import (
 	"testing"
 )
 
+func TestCVAgreementObjectV2CompactRoundTripAndTamper(t *testing.T) {
+	object, public := cvAgreementObjectV2Fixture(t)
+	_, validators, err := cvAgreementEligibilitySamplesV2(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compact, err := cvAgreementObjectV2CompactCanonicalBytes(object, public.Params, validators)
+	if err != nil {
+		t.Fatal(err)
+	}
+	full, err := cvAgreementObjectV2CanonicalBytes(object, public.Params, validators)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(compact) >= len(full) {
+		t.Fatalf("compact wire did not shrink: compact=%d full=%d", len(compact), len(full))
+	}
+	t.Logf("compact-v1 agreement bytes: compact=%d full=%d", len(compact), len(full))
+	decoded, err := cvDecodeAgreementObjectV2(compact, public.Params, validators)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cvVerifyAgreementObjectV2(decoded, public); err != nil {
+		t.Fatalf("compact predicate rejected logical object: %v", err)
+	}
+	mutated := append([]byte(nil), compact...)
+	mutated[len(mutated)-1] ^= 1
+	if decodedMutated, err := cvDecodeAgreementObjectV2(mutated, public.Params, validators); err == nil {
+		if cvVerifyAgreementObjectV2(decodedMutated, public) == nil {
+			t.Fatal("compact predicate accepted tampered wire")
+		}
+	}
+}
+
+func TestCVAgreementObjectV2CompactDeltaBoundaries(t *testing.T) {
+	object, public := cvAgreementObjectV2Fixture(t)
+	_, validators, err := cvAgreementEligibilitySamplesV2(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	object.SelectedIndices = []int{0, 1, public.Params.poolSize - 1}
+	wire, err := cvAgreementObjectV2CompactCanonicalBytes(object, public.Params, validators)
+	if err != nil {
+		t.Fatal(err)
+	}
+	decoded, err := cvDecodeAgreementObjectV2(wire, public.Params, validators)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !equalInts(decoded.SelectedIndices, object.SelectedIndices) {
+		t.Fatalf("selection roundtrip: got %v want %v", decoded.SelectedIndices, object.SelectedIndices)
+	}
+}
+
 func TestCVRunAgreementV2RejectsInvalidCandidateBeforeNetwork(t *testing.T) {
 	object, public := cvAgreementObjectV2Fixture(t)
 	invalid := *object

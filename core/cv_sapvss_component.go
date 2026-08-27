@@ -69,7 +69,16 @@ func cvComponentDescriptorCanonicalBytes(descriptor *cvComponentDescriptor) ([]b
 }
 
 func cvDecodeComponentDescriptor(wire []byte, oldNodes []int) (*cvComponentDescriptor, error) {
-	if len(wire) == 0 || len(sortedUnique(oldNodes)) == 0 {
+	oldOrder := sortedUnique(oldNodes)
+	return cvDecodeComponentDescriptorWithRoster(wire, oldNodes, nodeSet(oldOrder))
+}
+
+// cvDecodeComponentDescriptorWithRoster is the batch form used when the
+// caller already built the immutable old-committee membership set.
+func cvDecodeComponentDescriptorWithRoster(
+	wire []byte, oldNodes []int, oldMembers map[int]struct{},
+) (*cvComponentDescriptor, error) {
+	if len(wire) == 0 || len(oldNodes) == 0 || len(oldMembers) == 0 {
 		return nil, fmt.Errorf("invalid expected compact CV-sAPVSS component descriptor")
 	}
 	r := newCVWireReader(wire)
@@ -82,7 +91,7 @@ func cvDecodeComponentDescriptor(wire []byte, oldNodes []int) (*cvComponentDescr
 		return nil, fmt.Errorf("invalid compact CV-sAPVSS component dealer")
 	}
 	dealer := int(dealerWire)
-	if _, ok := nodeSet(sortedUnique(oldNodes))[dealer]; !ok {
+	if _, ok := oldMembers[dealer]; !ok {
 		return nil, fmt.Errorf("compact CV-sAPVSS component dealer outside old roster")
 	}
 	leafDigest, err := r.bytes(32)
@@ -97,7 +106,11 @@ func cvDecodeComponentDescriptor(wire []byte, oldNodes []int) (*cvComponentDescr
 	if err != nil || len(certificate) == 0 || r.reader.Len() != 0 {
 		return nil, fmt.Errorf("invalid compact CV-sAPVSS component certificate")
 	}
-	descriptor := &cvComponentDescriptor{dealer: dealer, leafDigest: append([]byte(nil), leafDigest...), dispersal: *dispersal, certificate: append([]byte(nil), certificate...)}
+	// cvWireReader.bytes returns owned slices, so transferring them avoids a
+	// second copy while preserving isolation from the caller's wire buffer.
+	descriptor := &cvComponentDescriptor{
+		dealer: dealer, leafDigest: leafDigest, dispersal: *dispersal, certificate: certificate,
+	}
 	canonical, err := cvComponentDescriptorCanonicalBytes(descriptor)
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical compact CV-sAPVSS component descriptor")
@@ -122,6 +135,16 @@ func cvValidateNetworkComponentDescriptor(cfg Config, descriptor *cvComponentDes
 	}
 	if _, err := cvDecodeComponentDescriptor(wire, c.OldCommittee); err != nil {
 		return err
+	}
+	return cvValidateDecodedNetworkComponentDescriptor(&c, descriptor)
+}
+
+// cvValidateDecodedNetworkComponentDescriptor verifies a descriptor whose
+// canonical wire form and roster-bound shape were already checked by the
+// caller. c must have passed configuration and runtime validation.
+func cvValidateDecodedNetworkComponentDescriptor(c *Config, descriptor *cvComponentDescriptor) error {
+	if c == nil || c.runtime == nil || c.runtime.lockSigner == nil {
+		return fmt.Errorf("CV-sAPVSS component lock signer is unavailable")
 	}
 	statement, err := cvComponentStatementDigest(descriptor.dealer, descriptor.leafDigest, &descriptor.dispersal)
 	if err != nil {

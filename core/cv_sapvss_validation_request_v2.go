@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"fmt"
+	"time"
 )
 
 const (
@@ -72,133 +73,178 @@ func cvValidationRequestV2CanonicalBytes(request *cvValidationRequestV2, params 
 }
 
 func cvDecodeValidationRequestV2(wire []byte, params cvV2Params) (*cvValidationRequestV2, error) {
+	request, _, err := cvDecodeValidationRequestV2WithCanonical(wire, params)
+	return request, err
+}
+
+func cvDecodeValidationRequestV2WithCanonical(wire []byte, params cvV2Params) (*cvValidationRequestV2, []byte, error) {
 	r := newCVWireReader(wire)
 	domain, err := r.bytes(len(cvValidationRequestWireV2Domain))
 	if err != nil || !bytes.Equal(domain, []byte(cvValidationRequestWireV2Domain)) {
-		return nil, fmt.Errorf("invalid CV V2 validation request domain")
+		return nil, nil, fmt.Errorf("invalid CV V2 validation request domain")
 	}
 	nested := make([][]byte, 4)
 	for i := range nested {
 		nested[i], err = r.bytes(cvMaxNetworkPayloadBytes)
 		if err != nil {
-			return nil, fmt.Errorf("invalid CV V2 validation request field")
+			return nil, nil, fmt.Errorf("invalid CV V2 validation request field")
 		}
 	}
 	count, err := r.uint32()
 	if err != nil || count != params.componentCount {
-		return nil, fmt.Errorf("invalid CV V2 validation request selection count")
+		return nil, nil, fmt.Errorf("invalid CV V2 validation request selection count")
 	}
 	selected := make([]int, count)
 	for i := range selected {
 		value, readErr := r.uint64()
 		if readErr != nil || value >= uint64(params.poolSize) {
-			return nil, fmt.Errorf("invalid CV V2 validation request selection")
+			return nil, nil, fmt.Errorf("invalid CV V2 validation request selection")
 		}
 		selected[i] = int(value)
 	}
 	arcWire, err := r.bytes(cvMaxComponentSignatureBytes + 256)
 	if err != nil || r.reader.Len() != 0 {
-		return nil, fmt.Errorf("invalid CV V2 validation request ARC")
+		return nil, nil, fmt.Errorf("invalid CV V2 validation request ARC")
 	}
 	header, err := cvDecodeAggregateHeaderV2(nested[0])
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	pool, err := cvDecodePoolV2(nested[1], params)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	poolCert, err := cvDecodePoolCertificateV2(nested[2])
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	coin, err := cvDecodeCoinOutputV2(nested[3])
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	arc, err := cvDecodeAPDBLockV2(arcWire)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	request := &cvValidationRequestV2{Header: *header, Pool: *pool, PoolCert: *poolCert,
 		ContributorCoin: *coin, SelectedIndices: selected, ARC: *arc}
 	canonical, err := cvValidationRequestV2CanonicalBytes(request, params)
 	if err != nil || !bytes.Equal(canonical, wire) {
-		return nil, fmt.Errorf("non-canonical CV V2 validation request")
+		return nil, nil, fmt.Errorf("non-canonical CV V2 validation request")
 	}
-	return request, nil
+	return request, canonical, nil
 }
 
 func cvVerifyValidationRequestPublicV2(
 	request *cvValidationRequestV2, contextDigest []byte, params cvV2Params,
 	eligibleProposers map[int]struct{}, apdbSigner, controlSigner, coinSigner *tblsThresholdSigner,
 ) error {
-	return cvVerifyValidationRequestPublicModeV2(
+	_, _, err := cvValidateValidationRequestPublicModeV2(
 		request, contextDigest, params, eligibleProposers, apdbSigner, controlSigner, coinSigner, true,
 	)
+	return err
 }
 
 func cvVerifyValidationRequestPublicAfterComponentValidationV2(
 	request *cvValidationRequestV2, contextDigest []byte, params cvV2Params,
 	eligibleProposers map[int]struct{}, apdbSigner, controlSigner, coinSigner *tblsThresholdSigner,
 ) error {
-	return cvVerifyValidationRequestPublicModeV2(
+	_, _, err := cvValidateValidationRequestPublicModeV2(
+		request, contextDigest, params, eligibleProposers, apdbSigner, controlSigner, coinSigner, false,
+	)
+	return err
+}
+
+func cvValidateValidationRequestPublicAfterComponentValidationV2(
+	request *cvValidationRequestV2, contextDigest []byte, params cvV2Params,
+	eligibleProposers map[int]struct{}, apdbSigner, controlSigner, coinSigner *tblsThresholdSigner,
+) ([]byte, time.Duration, error) {
+	return cvValidateValidationRequestPublicModeV2(
 		request, contextDigest, params, eligibleProposers, apdbSigner, controlSigner, coinSigner, false,
 	)
 }
 
-func cvVerifyValidationRequestPublicModeV2(
+func cvValidateValidationRequestPublicAfterComponentValidationV2WithCanonical(
+	request *cvValidationRequestV2, canonical []byte, contextDigest []byte, params cvV2Params,
+	eligibleProposers map[int]struct{}, apdbSigner, controlSigner, coinSigner *tblsThresholdSigner,
+) error {
+	_, _, err := cvValidateValidationRequestPublicModeV2WithCanonical(
+		request, canonical, 0, contextDigest, params, eligibleProposers,
+		apdbSigner, controlSigner, coinSigner, false,
+	)
+	return err
+}
+
+func cvValidateValidationRequestPublicModeV2(
 	request *cvValidationRequestV2, contextDigest []byte, params cvV2Params,
 	eligibleProposers map[int]struct{}, apdbSigner, controlSigner, coinSigner *tblsThresholdSigner,
 	validateComponents bool,
-) error {
+) ([]byte, time.Duration, error) {
 	if request == nil || len(contextDigest) != 32 || len(eligibleProposers) == 0 ||
 		!cvV2SignerHasRole(apdbSigner, cvV2RoleAPDB) || !cvV2SignerHasRole(controlSigner, cvV2RoleControl) ||
 		!cvV2SignerHasRole(coinSigner, cvV2RoleCoin) {
-		return fmt.Errorf("invalid CV V2 validation request context")
+		return nil, 0, fmt.Errorf("invalid CV V2 validation request context")
 	}
-	if _, err := cvValidationRequestV2CanonicalBytes(request, params); err != nil {
-		return err
+	canonicalStarted := time.Now()
+	canonical, err := cvValidationRequestV2CanonicalBytes(request, params)
+	canonicalLatency := time.Since(canonicalStarted)
+	if err != nil {
+		return nil, canonicalLatency, err
+	}
+	return cvValidateValidationRequestPublicModeV2WithCanonical(request, canonical, canonicalLatency,
+		contextDigest, params, eligibleProposers, apdbSigner, controlSigner, coinSigner, validateComponents)
+}
+
+func cvValidateValidationRequestPublicModeV2WithCanonical(
+	request *cvValidationRequestV2, canonical []byte, canonicalLatency time.Duration,
+	contextDigest []byte, params cvV2Params,
+	eligibleProposers map[int]struct{}, apdbSigner, controlSigner, coinSigner *tblsThresholdSigner,
+	validateComponents bool,
+) ([]byte, time.Duration, error) {
+	if request == nil || len(canonical) == 0 || len(contextDigest) != 32 || len(eligibleProposers) == 0 ||
+		!cvV2SignerHasRole(apdbSigner, cvV2RoleAPDB) || !cvV2SignerHasRole(controlSigner, cvV2RoleControl) ||
+		!cvV2SignerHasRole(coinSigner, cvV2RoleCoin) {
+		return nil, canonicalLatency, fmt.Errorf("invalid CV V2 validation request context")
 	}
 	if _, eligible := eligibleProposers[request.Header.ProposerID]; !eligible ||
 		request.Pool.ProposerID != request.Header.ProposerID ||
 		!bytes.Equal(request.Header.ContextDigest, contextDigest) ||
 		!bytes.Equal(request.Pool.ContextDigest, contextDigest) ||
 		!bytes.Equal(request.Header.PoolDigest, request.Pool.Digest) {
-		return fmt.Errorf("invalid CV V2 validation proposer, context, or pool")
+		return nil, canonicalLatency, fmt.Errorf("invalid CV V2 validation proposer, context, or pool")
 	}
 	if validateComponents {
 		for _, component := range request.Pool.Components {
 			if err := cvValidateComponentRefV2(component, apdbSigner); err != nil {
-				return fmt.Errorf("invalid CV V2 validation component: %w", err)
+				return nil, canonicalLatency, fmt.Errorf("invalid CV V2 validation component: %w", err)
 			}
 		}
 	}
 	if err := cvVerifyPoolCertificateV2(&request.Pool, &request.PoolCert, controlSigner); err != nil {
-		return err
+		return nil, canonicalLatency, err
 	}
 	invocation, err := cvContributorCoinInvocationV2(contextDigest, request.Header.ProposerID, request.Pool.Digest)
 	if err != nil || cvVerifyCoinOutputV2(&request.ContributorCoin, invocation, coinSigner) != nil {
-		return fmt.Errorf("invalid CV V2 validation contributor coin")
+		return nil, canonicalLatency, fmt.Errorf("invalid CV V2 validation contributor coin")
 	}
 	want, err := cvSelectedPoolIndicesV2(params.poolSize, params.componentCount, request.ContributorCoin.Value)
 	if err != nil || !equalInts(want, request.SelectedIndices) {
-		return fmt.Errorf("invalid CV V2 validation selection")
+		return nil, canonicalLatency, fmt.Errorf("invalid CV V2 validation selection")
 	}
 	selectionDigest, err := cvSelectionDigestV2(
 		&request.ContributorCoin, request.SelectedIndices, params.poolSize, params.componentCount,
 	)
 	if err != nil || !bytes.Equal(selectionDigest, request.Header.SelectionDigest) {
-		return fmt.Errorf("invalid CV V2 validation selection digest")
+		return nil, canonicalLatency, fmt.Errorf("invalid CV V2 validation selection digest")
 	}
 	if !bytes.Equal(request.ARC.InstanceDigest, request.Header.APDBInstance) ||
 		!bytes.Equal(request.ARC.Root, request.Header.APDBRoot) {
-		return fmt.Errorf("invalid CV V2 validation ARC binding")
+		return nil, canonicalLatency, fmt.Errorf("invalid CV V2 validation ARC binding")
 	}
 	if err := cvVerifyAPDBLockV2(&request.ARC, apdbSigner); err != nil {
-		return err
+		return nil, canonicalLatency, err
 	}
-	return nil
+	return canonical, canonicalLatency, nil
 }
 
 func cvValidationSignatureV2CanonicalBytes(value *cvValidationSignatureV2) ([]byte, error) {

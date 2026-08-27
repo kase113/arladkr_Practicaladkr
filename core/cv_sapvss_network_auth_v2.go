@@ -189,7 +189,8 @@ func cvNetworkAuthDigestV2(sid string, epoch uint64, from, to int, tag string, e
 
 func cvV2ReceiverOriginatedTag(tag string) bool {
 	switch tag {
-	case apvssTagLaneACK, cvTagLaneACKV2, cvTagAggregateRecoverGetV2, cvTagAggregateShareV2:
+	case apvssTagLaneACK, cvTagLaneACKV2, cvTagAggregateRecoverGetV2, cvTagAggregateRecoverCancelV2,
+		cvTagAggregatePayloadGetV2, cvTagAggregateShareV2:
 		return true
 	default:
 		return false

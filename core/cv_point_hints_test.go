@@ -48,6 +48,51 @@ func TestCVPayloadHintsRoundTripEquivalence(t *testing.T) {
 	}
 }
 
+func TestCVDealerPayloadResponseCanOmitHints(t *testing.T) {
+	leaf, context, receivers, validators := cvAllACKLeafV2Fixture(t)
+	payload, err := cvLeafV2CanonicalBytes(leaf, receivers, validators)
+	if err != nil {
+		t.Fatal(err)
+	}
+	newService := func() *cvAPDBNetworkServiceV2 {
+		return &cvAPDBNetworkServiceV2{cfg: cvAPDBNetworkServiceConfigV2{
+			MaximumPayload: len(payload), LeafContext: context, Receivers: receivers, Validators: validators,
+		}}
+	}
+	instance := bytes.Repeat([]byte{9}, 32)
+
+	t.Setenv("RLADKR_APDB_PAYLOAD_HINTS", "1")
+	withHints, err := cvDecodeAPDBPayloadResponseV2(newService().dealerPayloadResponseV2(instance, payload), len(payload))
+	if err != nil || len(withHints.Hints) == 0 {
+		t.Fatalf("enabled dealer hints bytes=%d err=%v", len(withHints.Hints), err)
+	}
+
+	t.Setenv("RLADKR_APDB_PAYLOAD_HINTS", "0")
+	withoutHints, err := cvDecodeAPDBPayloadResponseV2(newService().dealerPayloadResponseV2(instance, payload), len(payload))
+	if err != nil || len(withoutHints.Hints) != 0 || !bytes.Equal(withoutHints.Payload, payload) {
+		t.Fatalf("payload-only response hints=%d err=%v", len(withoutHints.Hints), err)
+	}
+}
+
+func TestCVPayloadHintsDefaultToPayloadOnly(t *testing.T) {
+	t.Setenv("RLADKR_APDB_PAYLOAD_HINTS", "")
+	if CVPayloadHintsEnabled() {
+		t.Fatal("payload hints enabled by default, want payload-only")
+	}
+	for _, value := range []string{"1", "true", "ON", "enabled"} {
+		t.Setenv("RLADKR_APDB_PAYLOAD_HINTS", value)
+		if !CVPayloadHintsEnabled() {
+			t.Fatalf("payload hints disabled for explicit value %q", value)
+		}
+	}
+	for _, value := range []string{"0", "false", "off", "invalid"} {
+		t.Setenv("RLADKR_APDB_PAYLOAD_HINTS", value)
+		if CVPayloadHintsEnabled() {
+			t.Fatalf("payload hints enabled for value %q", value)
+		}
+	}
+}
+
 func TestCVPayloadHintsCorruptionFallsBack(t *testing.T) {
 	leaf, context, receivers, validators := cvAllACKLeafV2Fixture(t)
 	wire, err := cvLeafV2CanonicalBytes(leaf, receivers, validators)

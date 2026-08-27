@@ -149,11 +149,18 @@ func cvCandidateFanoutParallelV2(peers int) int {
 	return parallel
 }
 
+type cvCandidateResponseCallV2 struct {
+	ready    chan struct{}
+	response []byte
+	err      error
+}
+
 type cvCandidateFanoutStateV2 struct {
-	mu      sync.Mutex
-	acked   map[int]struct{}
-	waiters map[int]chan struct{}
-	refs    int
+	mu       sync.Mutex
+	acked    map[int]struct{}
+	waiters  map[int]chan struct{}
+	ackProbe []byte
+	refs     int
 }
 
 func (s *cvCandidateFanoutStateV2) markACK(peer int) {
@@ -232,8 +239,9 @@ func (s *cvAPDBNetworkServiceV2) candidateFanoutStateV2(digest string) *cvCandid
 	}
 	state := s.candidateFanoutV2[digest]
 	if state == nil {
+		probe, _ := cvEncodeCertifiedCandidateACKV2(digest)
 		state = &cvCandidateFanoutStateV2{
-			acked: make(map[int]struct{}), waiters: make(map[int]chan struct{}),
+			acked: make(map[int]struct{}), waiters: make(map[int]chan struct{}), ackProbe: probe,
 		}
 		s.candidateFanoutV2[digest] = state
 	}
@@ -280,6 +288,9 @@ func (s *cvAPDBNetworkServiceV2) cachedCertifiedCandidateWireV2(digest string) [
 func (s *cvAPDBNetworkServiceV2) waitCertifiedCandidateACKV2(
 	ctx context.Context, state *cvCandidateFanoutStateV2, peer int, delay time.Duration,
 ) bool {
+	if state == nil || state.isACKed(peer) {
+		return state != nil
+	}
 	acked := state.ackedSignal(peer)
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
@@ -296,16 +307,32 @@ func (s *cvAPDBNetworkServiceV2) waitCertifiedCandidateACKV2(
 }
 
 func (s *cvAPDBNetworkServiceV2) sendCertifiedCandidatePeerV2(
-	ctx context.Context, state *cvCandidateFanoutStateV2, peer int, digest string, wire []byte,
+	ctx context.Context, state *cvCandidateFanoutStateV2, peer int, digest string, wire []byte, probeFirst bool,
 ) error {
 	started := time.Now()
 	defer func() { s.recordCandidateFanoutPeerLatencyV2(time.Since(started)) }()
+	// ackProbe is immutable for this digest and safe for concurrent readers.
+	probe := state.ackProbe
+	if len(probe) == 0 {
+		var err error
+		probe, err = cvEncodeCertifiedCandidateACKV2(digest)
+		if err != nil {
+			return err
+		}
+	}
 	for attempt := 0; attempt < cvCandidateFanoutMaxAttemptsV2; attempt++ {
 		if state.isACKed(peer) {
 			return nil
 		}
 		delay := cvCandidateFanoutRetryBaseV2 << attempt
-		if err := s.send(peer, cvTagCertifiedCandidateV2, wire); err == nil {
+		tag, payload := cvCandidateFanoutAttemptV2(attempt, probeFirst, probe, wire)
+		if tag == cvTagCertifiedCandidateACKProbeV2 {
+			// A successful first delivery may have lost only its small ACK. Probe
+			// the receiver's delivered/verified state before transmitting the
+			// complete candidate on the next attempt. Relays start with this probe
+			// because the origin has already flooded the same canonical object.
+		}
+		if err := s.send(peer, tag, payload); err == nil {
 			waitStarted := time.Now()
 			acknowledged := s.waitCertifiedCandidateACKV2(ctx, state, peer, delay)
 			canceled := ctx.Err() != nil || s.ctx.Err() != nil
@@ -325,19 +352,20 @@ func (s *cvAPDBNetworkServiceV2) sendCertifiedCandidatePeerV2(
 			}
 			return s.ctx.Err()
 		} else {
+			// A failed send cannot produce an ACK for this attempt. Preserve the
+			// exponential retry pacing, but avoid waiting on an impossible ACK.
 			waitStarted := time.Now()
-			acknowledged := s.waitCertifiedCandidateACKV2(ctx, state, peer, delay)
-			canceled := ctx.Err() != nil || s.ctx.Err() != nil
-			s.recordCandidateFanoutAttemptV2(time.Since(waitStarted), !acknowledged && !canceled)
-			if acknowledged {
-				return nil
-			}
-			if canceled {
-				if err := ctx.Err(); err != nil {
-					return err
-				}
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-s.ctx.Done():
+				timer.Stop()
 				return s.ctx.Err()
+			case <-timer.C:
 			}
+			s.recordCandidateFanoutAttemptV2(time.Since(waitStarted), true)
 		}
 	}
 	if state.isACKed(peer) {
@@ -346,11 +374,22 @@ func (s *cvAPDBNetworkServiceV2) sendCertifiedCandidatePeerV2(
 	return fmt.Errorf("CV V2 candidate ACK timeout from peer %d for %x", peer, []byte(digest))
 }
 
+func cvCandidateFanoutAttemptV2(attempt int, probeFirst bool, probe, wire []byte) (string, []byte) {
+	probeAttempt := attempt%2 == 1
+	if probeFirst {
+		probeAttempt = attempt%2 == 0
+	}
+	if probeAttempt {
+		return cvTagCertifiedCandidateACKProbeV2, probe
+	}
+	return cvTagCertifiedCandidateV2, wire
+}
+
 // fanoutCandidateV2 sends one canonical candidate to each peer with bounded
 // parallelism. A peer is retried only until it ACKs or the bounded attempt
 // budget is exhausted; successful peers are never included in later retries.
 func (s *cvAPDBNetworkServiceV2) fanoutCandidateV2(
-	ctx context.Context, digest string, wire []byte, excluded, origin int,
+	ctx context.Context, digest string, wire []byte, excluded, origin int, probeFirst bool,
 ) error {
 	if s == nil || ctx == nil || len(digest) != 32 || len(wire) == 0 {
 		return fmt.Errorf("invalid CV V2 candidate fanout")
@@ -405,7 +444,7 @@ func (s *cvAPDBNetworkServiceV2) fanoutCandidateV2(
 		go func() {
 			defer workers.Done()
 			defer func() { <-sem }()
-			errs <- s.sendCertifiedCandidatePeerV2(ctx, state, peer, digest, wire)
+			errs <- s.sendCertifiedCandidatePeerV2(ctx, state, peer, digest, wire, probeFirst)
 		}()
 	}
 	workers.Wait()
@@ -459,33 +498,69 @@ func (s *cvAPDBNetworkServiceV2) agreementPublicContextV2() (cvAgreementPublicCo
 		return cvAgreementPublicContextV2{}, fmt.Errorf("nil CV V2 candidate service")
 	}
 	s.mu.Lock()
+	if cached := s.agreementPublicContextCache; cached != nil {
+		public := *cached
+		s.mu.Unlock()
+		return public, nil
+	}
 	coin := s.eligibilityCoin
+	proposers := append([]int(nil), s.eligibleProposerSample...)
+	if len(proposers) == 0 {
+		proposers = make([]int, 0, len(s.eligibleProposers))
+		for proposer := range s.eligibleProposers {
+			proposers = append(proposers, proposer)
+		}
+		sort.Ints(proposers)
+	}
+	validators := append([]int(nil), s.validatorSample...)
 	s.mu.Unlock()
 	if coin == nil {
 		return cvAgreementPublicContextV2{}, fmt.Errorf("CV V2 eligibility coin is not available")
-	}
-	coinWire, err := cvCoinOutputV2CanonicalBytes(coin)
-	if err != nil {
-		return cvAgreementPublicContextV2{}, err
-	}
-	coin, err = cvDecodeCoinOutputV2(coinWire)
-	if err != nil {
-		return cvAgreementPublicContextV2{}, err
 	}
 	public := cvAgreementPublicContextV2{
 		SID: s.cfg.SID, Epoch: s.cfg.Epoch, ContextDigest: append([]byte(nil), s.cfg.ExpectedContext...),
 		OldCommittee: append([]int(nil), s.cfg.OldRoster...), EligibilityCoin: coin, Params: s.cfg.Params,
 		APDBSigner: s.apdbSigner, ControlSigner: s.controlSigner, CoinSigner: s.coinSigner,
-		ValidatorKeys: s.cfg.Validators,
+		ValidatorKeys: s.cfg.Validators, verifiedProposerSample: proposers,
+		verifiedValidatorSample: validators, eligibilityVerified: true,
+		verifiedCandidate: s.isVerifiedCertifiedCandidateV2,
 	}
 	if _, _, err := cvAgreementEligibilitySamplesV2(public); err != nil {
 		return cvAgreementPublicContextV2{}, err
 	}
+	s.mu.Lock()
+	if s.agreementPublicContextCache == nil {
+		cached := public
+		s.agreementPublicContextCache = &cached
+	} else {
+		public = *s.agreementPublicContextCache
+	}
+	s.mu.Unlock()
 	return public, nil
+}
+
+func (s *cvAPDBNetworkServiceV2) isVerifiedCertifiedCandidateV2(wire []byte) bool {
+	if s == nil || len(wire) == 0 {
+		return false
+	}
+	digest := cvCertifiedCandidateDigestV2(wire)
+	s.mu.Lock()
+	cached := s.certifiedCandidatesV2[digest]
+	s.mu.Unlock()
+	return bytes.Equal(cached, wire)
 }
 
 func (s *cvAPDBNetworkServiceV2) acceptCertifiedCandidateV2(wire []byte) (*cvAgreementObjectV2, bool, error) {
 	digest := cvCertifiedCandidateDigestV2(wire)
+	return s.acceptCertifiedCandidateDigestV2(wire, digest)
+}
+
+func (s *cvAPDBNetworkServiceV2) acceptCertifiedCandidateDigestV2(
+	wire []byte, digest string,
+) (*cvAgreementObjectV2, bool, error) {
+	if digest == "" {
+		return nil, false, fmt.Errorf("invalid CV V2 certified candidate digest")
+	}
 	s.mu.Lock()
 	cached := s.certifiedCandidatesV2[digest]
 	s.mu.Unlock()
@@ -499,17 +574,22 @@ func (s *cvAPDBNetworkServiceV2) acceptCertifiedCandidateV2(wire []byte) (*cvAgr
 	if err != nil {
 		return nil, false, err
 	}
-	_, validators, err := cvAgreementEligibilitySamplesV2(public)
-	if err != nil {
-		return nil, false, err
-	}
+	// agreementPublicContextV2 validates and snapshots the eligibility samples;
+	// reuse that immutable snapshot instead of repeating the same checks.
+	validators := append([]int(nil), public.verifiedValidatorSample...)
 	object, err := cvDecodeAgreementObjectV2(wire, s.cfg.Params, validators)
-	if err != nil || cvVerifyAgreementObjectV2(object, public) != nil {
+	if err != nil {
 		return nil, false, fmt.Errorf("invalid CV V2 certified candidate")
 	}
-	canonical, err := cvAgreementObjectV2CanonicalBytes(object, s.cfg.Params, validators)
+	canonical, err := cvValidateAgreementObjectV2(object, public)
 	if err != nil {
-		return nil, false, err
+		return nil, false, fmt.Errorf("invalid CV V2 certified candidate")
+	}
+	// Normalize the cached representation to the locally selected wire mode.
+	// The transport digest remains tied to the actual wire bytes, preserving
+	// authenticated fetch semantics during a rolling deployment.
+	if !bytes.Equal(canonical, wire) {
+		digest = cvCertifiedCandidateDigestV2(canonical)
 	}
 	return s.rememberVerifiedCertifiedCandidateV2(object, digest, canonical)
 }
@@ -525,6 +605,10 @@ func (s *cvAPDBNetworkServiceV2) rememberVerifiedCertifiedCandidateV2(
 		return nil, false, fmt.Errorf("invalid verified CV V2 certified candidate")
 	}
 	s.mu.Lock()
+	if existingDigest := s.candidateDigestByProposerV2[object.Header.ProposerID]; existingDigest != "" && existingDigest != digest {
+		s.mu.Unlock()
+		return nil, false, fmt.Errorf("conflicting CV V2 candidate for proposer")
+	}
 	if existing := s.certifiedCandidatesV2[digest]; len(existing) != 0 {
 		s.mu.Unlock()
 		if bytes.Equal(existing, canonical) {
@@ -532,6 +616,7 @@ func (s *cvAPDBNetworkServiceV2) rememberVerifiedCertifiedCandidateV2(
 		}
 		return nil, false, fmt.Errorf("conflicting CV V2 certified candidate digest")
 	}
+	s.candidateDigestByProposerV2[object.Header.ProposerID] = digest
 	s.certifiedCandidatesV2[digest] = append([]byte(nil), canonical...)
 	s.mu.Unlock()
 	select {
@@ -540,6 +625,29 @@ func (s *cvAPDBNetworkServiceV2) rememberVerifiedCertifiedCandidateV2(
 		return nil, false, s.ctx.Err()
 	}
 	return object, true, nil
+}
+
+func (s *cvAPDBNetworkServiceV2) registerCandidateOriginV2(origin int, digest string) bool {
+	if s == nil || origin < 0 || len(digest) != 32 {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, eligible := s.eligibleProposers[origin]; !eligible {
+		return false
+	}
+	if _, exists := s.candidateDigestByProposerV2[origin]; exists {
+		return false
+	}
+	if len(s.candidateDigestByProposerV2) >= s.cfg.Params.proposerSampleSize {
+		return false
+	}
+	s.candidateDigestByProposerV2[origin] = digest
+	if s.candidateOriginsV2[digest] == nil {
+		s.candidateOriginsV2[digest] = make(map[int]struct{}, 1)
+	}
+	s.candidateOriginsV2[digest][origin] = struct{}{}
+	return true
 }
 
 func (s *cvAPDBNetworkServiceV2) acceptVerifiedCertifiedCandidateV2(
@@ -562,12 +670,8 @@ func (s *cvAPDBNetworkServiceV2) PublishCertifiedCandidateV2(
 	if err != nil {
 		return err
 	}
-	_, validators, err := cvAgreementEligibilitySamplesV2(public)
+	wire, err := cvValidateAgreementObjectV2(candidate, public)
 	if err != nil {
-		return err
-	}
-	wire, err := cvAgreementObjectV2CanonicalBytes(candidate, s.cfg.Params, validators)
-	if err != nil || cvVerifyAgreementObjectV2(candidate, public) != nil {
 		return fmt.Errorf("invalid local CV V2 certified candidate")
 	}
 	if _, _, err := s.acceptVerifiedCertifiedCandidateV2(candidate, wire); err != nil {
@@ -577,7 +681,7 @@ func (s *cvAPDBNetworkServiceV2) PublishCertifiedCandidateV2(
 	if cached := s.cachedCertifiedCandidateWireV2(digest); len(cached) != 0 {
 		wire = cached
 	}
-	if err := s.fanoutCandidateV2(ctx, digest, wire, -1, candidate.Header.ProposerID); err != nil {
+	if err := s.fanoutCandidateV2(ctx, digest, wire, -1, candidate.Header.ProposerID, false); err != nil {
 		return err
 	}
 	for {
@@ -587,6 +691,40 @@ func (s *cvAPDBNetworkServiceV2) PublishCertifiedCandidateV2(
 		case <-s.ctx.Done():
 			return s.ctx.Err()
 		}
+	}
+}
+
+// publishLocallyCertifiedCandidateV2 is restricted to the proposer pipeline,
+// after CertifyAggregate has validated the Pool, contributor coin, ARC and
+// recovered VCert. Network-originated candidates must use the full verifier.
+func (s *cvAPDBNetworkServiceV2) publishLocallyCertifiedCandidateV2(
+	ctx context.Context, candidate *cvAgreementObjectV2,
+) error {
+	if s == nil || ctx == nil || candidate == nil || candidate.Header.ProposerID != s.cfg.LocalNode {
+		return fmt.Errorf("invalid locally certified CV V2 candidate")
+	}
+	public, err := s.agreementPublicContextV2()
+	if err != nil {
+		return err
+	}
+	// The context constructor already validated the cached sample.
+	validators := append([]int(nil), public.verifiedValidatorSample...)
+	wire, err := cvAgreementObjectV2WireBytes(candidate, s.cfg.Params, validators)
+	if err != nil {
+		return err
+	}
+	if _, _, err := s.acceptVerifiedCertifiedCandidateV2(candidate, wire); err != nil {
+		return err
+	}
+	digest := cvCertifiedCandidateDigestV2(wire)
+	if err := s.fanoutCandidateV2(ctx, digest, wire, -1, candidate.Header.ProposerID, false); err != nil {
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.ctx.Done():
+		return s.ctx.Err()
 	}
 }
 
@@ -617,13 +755,98 @@ func (s *cvAPDBNetworkServiceV2) CertifiedCandidateCountV2() int {
 
 func (s *cvAPDBNetworkServiceV2) acknowledgeCertifiedCandidateV2(msg Message) string {
 	digest := cvCertifiedCandidateDigestV2(msg.Body)
+	s.acknowledgeCertifiedCandidateDigestV2(msg, digest)
+	return digest
+}
+
+func (s *cvAPDBNetworkServiceV2) acknowledgeCertifiedCandidateDigestV2(msg Message, digest string) {
 	// This ACK confirms delivery of an authenticated envelope, not candidate
 	// validity. Sending it before expensive verification avoids WAN retries
 	// while preserving the verification gate below.
-	if ack, err := cvEncodeCertifiedCandidateACKV2(digest); err == nil {
+	if ack := s.cachedCandidateACKWireV2(digest); len(ack) != 0 {
 		_ = s.sendPriorityAsync(msg.From, cvTagCertifiedCandidateACKV2, ack, nil)
 	}
-	return digest
+}
+
+func (s *cvAPDBNetworkServiceV2) cachedCandidateACKWireV2(digest string) []byte {
+	if s == nil || len(digest) != 32 {
+		return nil
+	}
+	s.mu.Lock()
+	if wire := s.candidateACKWiresV2[digest]; len(wire) != 0 {
+		s.mu.Unlock()
+		return wire
+	}
+	wire, err := cvEncodeCertifiedCandidateACKV2(digest)
+	if err == nil {
+		if s.candidateACKWiresV2 == nil {
+			s.candidateACKWiresV2 = make(map[string][]byte)
+		}
+		s.candidateACKWiresV2[digest] = wire
+	}
+	s.mu.Unlock()
+	return wire
+}
+
+func (s *cvAPDBNetworkServiceV2) cachedCandidateResponseWireV2(digest string, candidate []byte) []byte {
+	if s == nil || len(digest) != 32 || len(candidate) == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	if wire := s.candidateResponseWiresV2[digest]; len(wire) != 0 {
+		s.mu.Unlock()
+		return wire
+	}
+	if call := s.candidateResponseCallsV2[digest]; call != nil {
+		s.mu.Unlock()
+		select {
+		case <-s.ctx.Done():
+			return nil
+		case <-call.ready:
+			return call.response
+		}
+	}
+	call := &cvCandidateResponseCallV2{ready: make(chan struct{})}
+	if s.candidateResponseCallsV2 == nil {
+		s.candidateResponseCallsV2 = make(map[string]*cvCandidateResponseCallV2)
+	}
+	s.candidateResponseCallsV2[digest] = call
+	s.mu.Unlock()
+	wire, err := cvEncodeCertifiedCandidateResponseV2(digest, candidate)
+	s.mu.Lock()
+	if err == nil {
+		if s.candidateResponseWiresV2 == nil {
+			s.candidateResponseWiresV2 = make(map[string][]byte)
+		}
+		s.candidateResponseWiresV2[digest] = wire
+	}
+	call.response = wire
+	call.err = err
+	delete(s.candidateResponseCallsV2, digest)
+	close(call.ready)
+	s.mu.Unlock()
+	return wire
+}
+
+func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateACKProbeV2(msg Message) {
+	digest, err := cvDecodeCertifiedCandidateACKV2(msg.Body)
+	if err != nil || !s.hasDeliveredCertifiedCandidateV2(digest) {
+		return
+	}
+	if ack := s.cachedCandidateACKWireV2(digest); len(ack) != 0 {
+		_ = s.sendPriorityAsync(msg.From, cvTagCertifiedCandidateACKV2, ack, nil)
+	}
+}
+
+func (s *cvAPDBNetworkServiceV2) hasDeliveredCertifiedCandidateV2(digest string) bool {
+	if s == nil || len(digest) != 32 {
+		return false
+	}
+	s.mu.Lock()
+	_, processing := s.processingCandidatesV2[digest]
+	delivered := processing || len(s.certifiedCandidatesV2[digest]) != 0
+	s.mu.Unlock()
+	return delivered
 }
 
 func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateAnnounceV2(msg Message) {
@@ -631,12 +854,9 @@ func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateAnnounceV2(msg Message)
 	if err != nil || origin != msg.From || len(s.cachedCertifiedCandidateWireV2(digest)) != 0 {
 		return
 	}
-	s.mu.Lock()
-	if s.candidateOriginsV2[digest] == nil {
-		s.candidateOriginsV2[digest] = make(map[int]struct{})
+	if !s.registerCandidateOriginV2(origin, digest) {
+		return
 	}
-	s.candidateOriginsV2[digest][origin] = struct{}{}
-	s.mu.Unlock()
 	if cvCandidateFanoutModeV2() == cvCandidateFanoutValidatorPullV2 {
 		if _, validators, sampleErr := cvAgreementEligibilitySamplesV2Must(s); sampleErr == nil {
 			localValidator := false
@@ -684,6 +904,30 @@ func (s *cvAPDBNetworkServiceV2) fetchCandidateWithValidatorFallbackV2(digest st
 	}
 }
 
+func (s *cvAPDBNetworkServiceV2) registerCandidateFetchWaiterV2(digest string, requester int) []int {
+	if s == nil || len(digest) != 32 || requester < 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	originSet := s.candidateOriginsV2[digest]
+	if len(originSet) == 0 {
+		return nil
+	}
+	if s.candidateFetchWaitersV2[digest] == nil {
+		if len(s.candidateFetchWaitersV2) >= s.cfg.Params.proposerSampleSize {
+			return nil
+		}
+		s.candidateFetchWaitersV2[digest] = make(map[int]struct{})
+	}
+	s.candidateFetchWaitersV2[digest][requester] = struct{}{}
+	origins := make([]int, 0, len(originSet))
+	for origin := range originSet {
+		origins = append(origins, origin)
+	}
+	return origins
+}
+
 func cvAgreementEligibilitySamplesV2Must(s *cvAPDBNetworkServiceV2) ([]int, []int, error) {
 	if s == nil {
 		return nil, nil, fmt.Errorf("nil candidate service")
@@ -692,7 +936,8 @@ func cvAgreementEligibilitySamplesV2Must(s *cvAPDBNetworkServiceV2) ([]int, []in
 	if err != nil {
 		return nil, nil, err
 	}
-	return cvAgreementEligibilitySamplesV2(public)
+	return append([]int(nil), public.verifiedProposerSample...),
+		append([]int(nil), public.verifiedValidatorSample...), nil
 }
 
 func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateFetchV2(msg Message) {
@@ -703,16 +948,7 @@ func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateFetchV2(msg Message) {
 	candidate := s.cachedCertifiedCandidateWireV2(digest)
 	if len(candidate) == 0 {
 		if cvCandidateFanoutModeV2() == cvCandidateFanoutValidatorPullV2 {
-			s.mu.Lock()
-			if s.candidateFetchWaitersV2[digest] == nil {
-				s.candidateFetchWaitersV2[digest] = make(map[int]struct{})
-			}
-			s.candidateFetchWaitersV2[digest][msg.From] = struct{}{}
-			origins := make([]int, 0, len(s.candidateOriginsV2[digest]))
-			for origin := range s.candidateOriginsV2[digest] {
-				origins = append(origins, origin)
-			}
-			s.mu.Unlock()
+			origins := s.registerCandidateFetchWaiterV2(digest, msg.From)
 			sort.Ints(origins)
 			for _, origin := range origins {
 				if origin != msg.From {
@@ -722,8 +958,8 @@ func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateFetchV2(msg Message) {
 		}
 		return
 	}
-	response, err := cvEncodeCertifiedCandidateResponseV2(digest, candidate)
-	if err == nil {
+	response := s.cachedCandidateResponseWireV2(digest, candidate)
+	if len(response) != 0 {
 		_ = s.sendAsync(msg.From, cvTagCertifiedCandidateResponseV2, response, nil)
 	}
 }
@@ -731,9 +967,6 @@ func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateFetchV2(msg Message) {
 func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateResponseV2(msg Message) {
 	digest, candidate, err := cvDecodeCertifiedCandidateResponseV2(msg.Body)
 	if err != nil {
-		return
-	}
-	if cvCertifiedCandidateDigestV2(candidate) != digest {
 		return
 	}
 	if cvCandidateFanoutModeV2() == cvCandidateFanoutValidatorPullV2 {
@@ -744,18 +977,28 @@ func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateResponseV2(msg Message)
 		}
 		delete(s.candidateFetchWaitersV2, digest)
 		s.mu.Unlock()
-		for _, peer := range waiters {
-			if response, encodeErr := cvEncodeCertifiedCandidateResponseV2(digest, candidate); encodeErr == nil {
+		// The received response already passed canonical decoding. Reuse its
+		// authenticated wire for waiters instead of decoding and re-encoding it.
+		response := append([]byte(nil), msg.Body...)
+		if len(response) != 0 {
+			for _, peer := range waiters {
 				_ = s.sendAsync(peer, cvTagCertifiedCandidateResponseV2, response, nil)
 			}
 		}
 	}
-	s.enqueueCertifiedCandidateV2(Message{From: msg.From, To: msg.To, Tag: cvTagCertifiedCandidateV2,
-		Body: candidate, WireBytes: msg.WireBytes})
+	candidateMsg := Message{From: msg.From, To: msg.To, Tag: cvTagCertifiedCandidateV2,
+		Body: candidate, WireBytes: msg.WireBytes}
+	s.acknowledgeCertifiedCandidateDigestV2(candidateMsg, digest)
+	s.enqueueCertifiedCandidateDigestV2(candidateMsg, digest)
 }
 
 func (s *cvAPDBNetworkServiceV2) enqueueCertifiedCandidateV2(msg Message) {
-	digest := s.acknowledgeCertifiedCandidateV2(msg)
+	digest := cvCertifiedCandidateDigestV2(msg.Body)
+	s.acknowledgeCertifiedCandidateDigestV2(msg, digest)
+	s.enqueueCertifiedCandidateDigestV2(msg, digest)
+}
+
+func (s *cvAPDBNetworkServiceV2) enqueueCertifiedCandidateDigestV2(msg Message, digest string) {
 	s.mu.Lock()
 	if cached := s.certifiedCandidatesV2[digest]; len(cached) != 0 && bytes.Equal(cached, msg.Body) {
 		s.mu.Unlock()
@@ -768,7 +1011,7 @@ func (s *cvAPDBNetworkServiceV2) enqueueCertifiedCandidateV2(msg Message) {
 	s.processingCandidatesV2[digest] = struct{}{}
 	s.mu.Unlock()
 	select {
-	case s.cryptoQueue <- cvCryptoJobV2{kind: cvCryptoJobCertifiedCandidateV2, msg: msg}:
+	case s.cryptoQueue <- cvCryptoJobV2{kind: cvCryptoJobCertifiedCandidateV2, msg: msg, digest: digest}:
 	case <-s.ctx.Done():
 		s.mu.Lock()
 		delete(s.processingCandidatesV2, digest)
@@ -777,16 +1020,21 @@ func (s *cvAPDBNetworkServiceV2) enqueueCertifiedCandidateV2(msg Message) {
 }
 
 func (s *cvAPDBNetworkServiceV2) handleCertifiedCandidateV2(msg Message) {
-	s.acknowledgeCertifiedCandidateV2(msg)
-	s.processCertifiedCandidateV2(msg)
+	digest := cvCertifiedCandidateDigestV2(msg.Body)
+	s.acknowledgeCertifiedCandidateDigestV2(msg, digest)
+	s.processCertifiedCandidateDigestV2(msg, digest)
 }
 
 func (s *cvAPDBNetworkServiceV2) processCertifiedCandidateV2(msg Message) {
 	digest := cvCertifiedCandidateDigestV2(msg.Body)
+	s.processCertifiedCandidateDigestV2(msg, digest)
+}
+
+func (s *cvAPDBNetworkServiceV2) processCertifiedCandidateDigestV2(msg Message, digest string) {
 	if cached := s.cachedCertifiedCandidateWireV2(digest); bytes.Equal(cached, msg.Body) {
 		return
 	}
-	object, accepted, err := s.acceptCertifiedCandidateV2(msg.Body)
+	object, accepted, err := s.acceptCertifiedCandidateDigestV2(msg.Body, digest)
 	if err != nil {
 		return
 	}
@@ -800,7 +1048,7 @@ func (s *cvAPDBNetworkServiceV2) processCertifiedCandidateV2(msg Message) {
 	mode := cvCandidateFanoutModeV2()
 	if mode != cvCandidateFanoutDirectOnlyV2 && mode != cvCandidateFanoutPullV2 && mode != cvCandidateFanoutValidatorPullV2 {
 		go func(origin int) {
-			_ = s.fanoutCandidateV2(s.ctx, digest, relayWire, msg.From, origin)
+			_ = s.fanoutCandidateV2(s.ctx, digest, relayWire, msg.From, origin, true)
 		}(object.Header.ProposerID)
 	}
 }

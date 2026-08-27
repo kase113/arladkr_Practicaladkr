@@ -7,6 +7,7 @@ import (
 
 type CVV2AgreementSizeReport struct {
 	AgreementBytes                  int `json:"agreement_bytes"`
+	CompactAgreementBytes           int `json:"compact_agreement_bytes,omitempty"`
 	AgreementFixedBytes             int `json:"agreement_fixed_bytes"`
 	PoolBytes                       int `json:"pool_bytes"`
 	PoolFixedBytes                  int `json:"pool_fixed_bytes"`
@@ -66,6 +67,13 @@ func cvAgreementSizeReportV2(
 	}
 	return CVV2AgreementSizeReport{
 		AgreementBytes: len(agreementWire), AgreementFixedBytes: agreementFixed,
+		CompactAgreementBytes: func() int {
+			wire, err := cvAgreementObjectV2CompactCanonicalBytes(object, params, validatorSample)
+			if err != nil {
+				return 0
+			}
+			return len(wire)
+		}(),
 		PoolBytes: len(poolWire), PoolFixedBytes: poolFixed,
 		PoolComponentCount: len(object.Pool.Components), ComponentReferenceBytes: componentReferenceBytes,
 		SelectedIndexCount: len(object.SelectedIndices), SelectedIndexBytes: selectedBytes,

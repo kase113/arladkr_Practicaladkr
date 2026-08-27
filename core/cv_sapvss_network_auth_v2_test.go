@@ -49,7 +49,10 @@ func TestCVNetworkAuthenticationV2SeparatesBLSAndEd25519Roles(t *testing.T) {
 	}{
 		{from: cfg.OldCommittee[0], to: cfg.NewCommittee[0], tag: cvTagHandoffV2},
 		{from: cfg.OldCommittee[1], to: cfg.NewCommittee[0], tag: cvTagAggregateRecoverStoreV2},
+		{from: cfg.OldCommittee[1], to: cfg.NewCommittee[0], tag: cvTagAggregatePayloadV2},
 		{from: cfg.NewCommittee[0], to: cfg.OldCommittee[0], tag: cvTagAggregateRecoverGetV2},
+		{from: cfg.NewCommittee[0], to: cfg.OldCommittee[0], tag: cvTagAggregateRecoverCancelV2},
+		{from: cfg.NewCommittee[0], to: cfg.OldCommittee[0], tag: cvTagAggregatePayloadGetV2},
 		{from: cfg.NewCommittee[1], to: cfg.OldCommittee[0], tag: apvssTagLaneACK},
 	}
 	for _, test := range tests {

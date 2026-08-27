@@ -660,17 +660,27 @@ func cvVerifyLeafStatementModeV2(
 func cvLeafV2UnsignedCanonicalBytes(
 	leaf *cvLeafV2, receivers *cvReceiverKeyMaterialV2,
 ) ([]byte, error) {
-	return cvLeafV2UnsignedCanonicalBytesMode(leaf, receivers, true)
+	return cvLeafV2UnsignedCanonicalBytesMode(leaf, receivers, true, 0)
 }
 
 func cvLeafV2UnsignedCanonicalBytesAfterValidation(
 	leaf *cvLeafV2, receivers *cvReceiverKeyMaterialV2,
 ) ([]byte, error) {
-	return cvLeafV2UnsignedCanonicalBytesMode(leaf, receivers, false)
+	return cvLeafV2UnsignedCanonicalBytesMode(leaf, receivers, false, 0)
+}
+
+// cvLeafV2UnsignedCanonicalBytesSized preallocates the assembly buffer when the
+// caller already knows the exact canonical length (the decode path compares
+// against a wire of that size). The hint never changes output bytes; an
+// under-estimate simply falls back to incremental growth.
+func cvLeafV2UnsignedCanonicalBytesSized(
+	leaf *cvLeafV2, receivers *cvReceiverKeyMaterialV2, sizeHint int,
+) ([]byte, error) {
+	return cvLeafV2UnsignedCanonicalBytesMode(leaf, receivers, false, sizeHint)
 }
 
 func cvLeafV2UnsignedCanonicalBytesMode(
-	leaf *cvLeafV2, receivers *cvReceiverKeyMaterialV2, validateEvidence bool,
+	leaf *cvLeafV2, receivers *cvReceiverKeyMaterialV2, validateEvidence bool, sizeHint int,
 ) ([]byte, error) {
 	if leaf == nil || cvValidateReceiverMaterialForLeafV2(&leaf.Context, receivers) != nil ||
 		cvValidateEvidencePartitionV2(&leaf.Context, &leaf.Partition) != nil ||
@@ -695,6 +705,9 @@ func cvLeafV2UnsignedCanonicalBytesMode(
 		return nil, err
 	}
 	var wire bytes.Buffer
+	if sizeHint > 0 {
+		wire.Grow(sizeHint)
+	}
 	_ = cvWriteBytes(&wire, []byte(cvLeafUnsignedWireDomainV2))
 	_ = cvWriteBytes(&wire, contextWire)
 	cvWriteUint64(&wire, uint64(leaf.DealerID))
@@ -785,18 +798,28 @@ func cvLeafV2UnsignedCanonicalBytesMode(
 func cvLeafV2CanonicalBytes(
 	leaf *cvLeafV2, receivers *cvReceiverKeyMaterialV2, validators *cvValidatorKeyMaterialV2,
 ) ([]byte, error) {
-	return cvLeafV2CanonicalBytesMode(leaf, receivers, validators, true)
+	return cvLeafV2CanonicalBytesMode(leaf, receivers, validators, true, 0)
 }
 
 func cvLeafV2CanonicalBytesAfterValidation(
 	leaf *cvLeafV2, receivers *cvReceiverKeyMaterialV2, validators *cvValidatorKeyMaterialV2,
 ) ([]byte, error) {
-	return cvLeafV2CanonicalBytesMode(leaf, receivers, validators, false)
+	return cvLeafV2CanonicalBytesMode(leaf, receivers, validators, false, 0)
+}
+
+// cvLeafV2CanonicalBytesSized is the decode-path variant: the caller knows the
+// wire length the canonical encoding must reproduce, so both assembly buffers
+// are allocated once instead of doubling through megabytes per leaf.
+func cvLeafV2CanonicalBytesSized(
+	leaf *cvLeafV2, receivers *cvReceiverKeyMaterialV2, validators *cvValidatorKeyMaterialV2,
+	sizeHint int,
+) ([]byte, error) {
+	return cvLeafV2CanonicalBytesMode(leaf, receivers, validators, false, sizeHint)
 }
 
 func cvLeafV2CanonicalBytesMode(
 	leaf *cvLeafV2, receivers *cvReceiverKeyMaterialV2, validators *cvValidatorKeyMaterialV2,
-	validateEvidence bool,
+	validateEvidence bool, sizeHint int,
 ) ([]byte, error) {
 	if leaf == nil || len(leaf.DealerSignature) != bls12381.SizeOfG1AffineCompressed ||
 		cvValidateValidatorMaterialForLeafV2(&leaf.Context, validators) != nil {
@@ -804,15 +827,22 @@ func cvLeafV2CanonicalBytesMode(
 	}
 	var unsigned []byte
 	var err error
+	unsignedHint := 0
+	if sizeHint > 64 {
+		unsignedHint = sizeHint - 64
+	}
 	if validateEvidence {
 		unsigned, err = cvLeafV2UnsignedCanonicalBytes(leaf, receivers)
 	} else {
-		unsigned, err = cvLeafV2UnsignedCanonicalBytesAfterValidation(leaf, receivers)
+		unsigned, err = cvLeafV2UnsignedCanonicalBytesSized(leaf, receivers, unsignedHint)
 	}
 	if err != nil {
 		return nil, err
 	}
 	var wire bytes.Buffer
+	if sizeHint > 0 {
+		wire.Grow(sizeHint)
+	}
 	_ = cvWriteBytes(&wire, []byte(cvLeafWireDomainV2))
 	_ = cvWriteBytes(&wire, unsigned)
 	_ = cvWriteBytes(&wire, leaf.DealerSignature)
@@ -856,6 +886,13 @@ func cvDecodeLeafV2Sidechannel(
 	wire []byte, side *cvDecodeSidechannelV2, expectedContext *cvLeafContextV2,
 	receivers *cvReceiverKeyMaterialV2, validators *cvValidatorKeyMaterialV2,
 ) (*cvLeafV2, error) {
+	// A leaf decode always owns a sidechannel: with no hints it exists purely
+	// to collect every deferred point for one leaf-wide subgroup batch.
+	if side == nil {
+		side = &cvDecodeSidechannelV2{collectSubgroup: true}
+	} else {
+		side.collectSubgroup = true
+	}
 	r := newCVWireReader(wire)
 	domain, err := r.bytes(len(cvLeafWireDomainV2))
 	if err != nil || !bytes.Equal(domain, []byte(cvLeafWireDomainV2)) {
@@ -873,6 +910,11 @@ func cvDecodeLeafV2Sidechannel(
 	if err != nil {
 		return nil, err
 	}
+	// One leaf-wide subgroup batch replaces the per-section checks; the leaf
+	// is rejected here before any structure escapes to the caller.
+	if err := side.finishDeferredSubgroupBatch(); err != nil {
+		return nil, fmt.Errorf("invalid CV V2 leaf point: %w", err)
+	}
 	leaf.DealerSignature = signature
 	leaf.Digest = hashBytes([]byte(cvLeafDigestDomainV2), wire)
 	// The unsigned statement hashes the exact canonical sub-slice of the wire
@@ -884,7 +926,7 @@ func cvDecodeLeafV2Sidechannel(
 	unsignedOffset := 4 + len(cvLeafWireDomainV2) + 4
 	unsignedWire := wire[unsignedOffset : unsignedOffset+len(unsigned)]
 	leaf.decodeVerifiedStatement = hashBytes([]byte(cvDealerSignatureDomainV2), unsignedWire)
-	canonical, err := cvLeafV2CanonicalBytesAfterValidation(leaf, receivers, validators)
+	canonical, err := cvLeafV2CanonicalBytesSized(leaf, receivers, validators, len(wire))
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 leaf")
 	}

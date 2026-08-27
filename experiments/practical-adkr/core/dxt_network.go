@@ -2,11 +2,13 @@ package core
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"os"
@@ -38,6 +40,59 @@ type dxtTranscriptWire struct {
 	Dealer           int            `json:"dealer"`
 	Transcript       *DXTTranscript `json:"transcript"`
 	TranscriptDigest []byte         `json:"transcript_digest"`
+	Compressed       []byte         `json:"transcript_gzip,omitempty"`
+}
+
+func marshalDXTTranscriptWire(wire dxtTranscriptWire) ([]byte, error) {
+	if wire.Transcript == nil {
+		return json.Marshal(wire)
+	}
+	raw, err := json.Marshal(wire.Transcript)
+	if err != nil {
+		return nil, err
+	}
+	var packed bytes.Buffer
+	zw := gzip.NewWriter(&packed)
+	if _, err := zw.Write(raw); err != nil {
+		_ = zw.Close()
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	wire.Transcript = nil
+	wire.Compressed = packed.Bytes()
+	return json.Marshal(wire)
+}
+
+func unmarshalDXTTranscriptWire(raw []byte, wire *dxtTranscriptWire) error {
+	if wire == nil {
+		return errors.New("nil DXT transcript wire")
+	}
+	if err := json.Unmarshal(raw, wire); err != nil {
+		return err
+	}
+	if wire.Transcript != nil || len(wire.Compressed) == 0 {
+		return nil
+	}
+	zr, err := gzip.NewReader(bytes.NewReader(wire.Compressed))
+	if err != nil {
+		return err
+	}
+	decoded, readErr := io.ReadAll(zr)
+	closeErr := zr.Close()
+	if readErr != nil {
+		return readErr
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	var transcript DXTTranscript
+	if err := json.Unmarshal(decoded, &transcript); err != nil {
+		return err
+	}
+	wire.Transcript = &transcript
+	return nil
 }
 
 type dxtTranscriptAck struct {
@@ -352,7 +407,7 @@ func (service *dxtNetworkService) handleTranscript(holder int, conn net.Conn, ra
 func (service *dxtNetworkService) verifyTranscriptWire(holder int, raw []byte) dxtTranscriptAck {
 	ack := dxtTranscriptAck{SID: service.cfg.SID, Epoch: service.cfg.Epoch, Holder: holder}
 	var wire dxtTranscriptWire
-	if err := json.Unmarshal(raw, &wire); err == nil {
+	if err := unmarshalDXTTranscriptWire(raw, &wire); err == nil {
 		ack.Dealer = wire.Dealer
 		ack.TranscriptDigest = append([]byte(nil), wire.TranscriptDigest...)
 		if wire.SID == service.cfg.SID && wire.Epoch == service.cfg.Epoch && containsNode(service.old, wire.Dealer) &&
@@ -441,11 +496,12 @@ func sendDXTTranscript(ctx context.Context, cfg Config, dealer, holder int, addr
 			continue
 		}
 		_ = conn.SetDeadline(time.Now().Add(timeout))
-		body, marshalErr := json.Marshal(wire)
+		body, marshalErr := marshalDXTTranscriptWire(wire)
 		if marshalErr == nil {
 			recordSentBytes(len(body) + 1)
 		}
-		writeErr := json.NewEncoder(conn).Encode(wire)
+		body = append(body, '\n')
+		_, writeErr := conn.Write(body)
 		var ack dxtTranscriptAck
 		readErr := json.NewDecoder(conn).Decode(&ack)
 		if readErr == nil {

@@ -2,6 +2,7 @@ package core
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -34,6 +35,58 @@ type mvbaTCPWire struct {
 	Msg  dmvba.ProtocolMessage
 }
 
+// MVBA messages keep their original gob object and are compressed only on the
+// TCP wire. The leading mode byte makes the framing backward-consistent within
+// this binary while preserving the existing logical proposal and predicate.
+func marshalMVBATCPWire(wire mvbaTCPWire) ([]byte, error) {
+	var raw bytes.Buffer
+	if err := gob.NewEncoder(&raw).Encode(wire); err != nil {
+		return nil, err
+	}
+	rawBytes := raw.Bytes()
+	var compressed bytes.Buffer
+	zw := gzip.NewWriter(&compressed)
+	if _, err := zw.Write(rawBytes); err != nil {
+		_ = zw.Close()
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	if compressed.Len()+1 >= len(rawBytes)+1 {
+		return append([]byte{0}, rawBytes...), nil
+	}
+	out := make([]byte, 1, compressed.Len()+1)
+	out[0] = 1
+	out = append(out, compressed.Bytes()...)
+	return out, nil
+}
+
+func unmarshalMVBATCPWire(body []byte, wire *mvbaTCPWire) error {
+	if len(body) < 1 || wire == nil {
+		return fmt.Errorf("invalid MVBA wire envelope")
+	}
+	data := body[1:]
+	if body[0] == 1 {
+		zr, err := gzip.NewReader(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		decompressed, readErr := io.ReadAll(zr)
+		closeErr := zr.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		data = decompressed
+	} else if body[0] != 0 {
+		return fmt.Errorf("unknown MVBA wire compression mode %d", body[0])
+	}
+	return gob.NewDecoder(bytes.NewReader(data)).Decode(wire)
+}
+
 type spbcSigMsg struct {
 	Signer int    `json:"signer"`
 	SigHex string `json:"sig_hex"`
@@ -53,6 +106,7 @@ type practicalMVBANetStat struct {
 	id              int
 	tag             string
 	sends           int64
+	bytes           int64
 	failures        int64
 	totalSendMicros int64
 	maxSendMicros   int64
@@ -186,10 +240,6 @@ func (n *mvbaTCPNet) Send(to int, msg dmvba.ProtocolMessage) error {
 		wire := dmvba.ReceivedMessage{From: n.id, Msg: msg}
 		select {
 		case n.hub.recv[to] <- wire:
-			if bodyLen, err := gobEncodeSize(mvbaTCPWire{From: n.id, Msg: msg}); err == nil {
-				recordSentBytes(4 + bodyLen)
-				recordRecvBytes(4 + bodyLen)
-			}
 			n.hub.recordMVBANetSend(n.id, practicalMVBANetTag(msg), time.Since(sendStart), 0, true, false, 0, nil)
 			return nil
 		default:
@@ -217,12 +267,11 @@ func (n *mvbaTCPNet) Send(to int, msg dmvba.ProtocolMessage) error {
 	}
 	poolKey := practicalMVBAPoolKey(addr, msg, n.hub.poolLanes)
 	traceMVBATCP("send_begin from=%d to=%d tag=%d round=%d leader=%d addr=%s", n.id, to, msg.Tag, msg.Round, msg.Leader, addr)
-	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(wire); err != nil {
+	body, err := marshalMVBATCPWire(wire)
+	if err != nil {
 		n.hub.recordMVBANetSend(n.id, practicalMVBANetTag(msg), time.Since(sendStart), 0, false, false, 0, err)
 		return err
 	}
-	body := buf.Bytes()
 	frame := make([]byte, 4+len(body))
 	binary.BigEndian.PutUint32(frame[:4], uint32(len(body)))
 	copy(frame[4:], body)
@@ -237,6 +286,7 @@ func (n *mvbaTCPNet) Send(to int, msg dmvba.ProtocolMessage) error {
 			return io.ErrShortWrite
 		}
 		recordSentBytes(4 + len(body))
+		n.hub.recordMVBANetBytes(n.id, practicalMVBANetTag(msg), 4+len(body))
 		return nil
 	}
 
@@ -394,7 +444,7 @@ func (h *mvbaTCPHub) readConn(id int, conn net.Conn) {
 		}
 		recordRecvBytes(4 + len(body))
 		var wire mvbaTCPWire
-		if err := gob.NewDecoder(bytes.NewReader(body)).Decode(&wire); err != nil {
+		if err := unmarshalMVBATCPWire(body, &wire); err != nil {
 			continue
 		}
 		traceMVBATCP("recv id=%d from=%d tag=%d round=%d leader=%d", id, wire.From, wire.Msg.Tag, wire.Msg.Round, wire.Msg.Leader)
@@ -423,7 +473,11 @@ func gobEncodeSize(v any) (int, error) {
 func practicalMVBANetTag(msg dmvba.ProtocolMessage) string {
 	if msg.Tag == dmvba.TagACSMVBA {
 		if inner, ok := msg.Body.(dmvba.ProtocolMessage); ok {
-			return string(msg.Tag) + "/" + string(inner.Tag)
+			tag := string(msg.Tag) + "/" + string(inner.Tag)
+			if class := dmvba.ClassifyEquivalentMessage(inner); class != "" {
+				tag += "/" + string(class)
+			}
+			return tag
 		}
 	}
 	return string(msg.Tag)
@@ -533,6 +587,21 @@ func (h *mvbaTCPHub) recordMVBANetSend(
 	stat.buckets[bucketIdx]++
 }
 
+func (h *mvbaTCPHub) recordMVBANetBytes(id int, tag string, n int) {
+	if h == nil || !h.netTiming || n <= 0 {
+		return
+	}
+	h.netStatsMu.Lock()
+	defer h.netStatsMu.Unlock()
+	key := fmt.Sprintf("%d|%s", id, tag)
+	stat := h.netStats[key]
+	if stat == nil {
+		stat = &practicalMVBANetStat{id: id, tag: tag, buckets: make([]int64, len(practicalMVBANetTimingBucketsMicros)+1)}
+		h.netStats[key] = stat
+	}
+	stat.bytes += int64(n)
+}
+
 func (h *mvbaTCPHub) dumpMVBANetStats() {
 	if h == nil || !h.netTiming {
 		return
@@ -575,6 +644,7 @@ func (h *mvbaTCPHub) dumpMVBANetStats() {
 			stat.reconnects,
 			stat.localSends,
 		)
+		fmt.Fprintf(os.Stderr, "PRACTICAL_MVBA_NET_BYTES sid=%s id=%d tag=%s bytes=%d\n", h.sid, stat.id, stat.tag, stat.bytes)
 	}
 }
 

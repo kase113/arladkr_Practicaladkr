@@ -121,8 +121,11 @@ func apvssCompactIdentity() bls12381.G1Affine {
 func apvssCompactPointSum(points []bls12381.G1Affine, scalars []fr.Element) bls12381.G1Affine {
 	if len(points) == len(scalars) && len(points) >= 32 {
 		var out bls12381.G1Affine
+		// Serial inner MSM: compact-range verification runs per lane inside
+		// the leaf-verify worker pool; gnark task fan-out here oversubscribes
+		// the outer workers without shortening the critical path.
 		if _, err := out.MultiExp(points, scalars, ecc.MultiExpConfig{
-			NbTasks: cvCryptoWorkers(len(points)),
+			NbTasks: cvNestedMSMWorkers(len(points)),
 		}); err == nil {
 			return out
 		}

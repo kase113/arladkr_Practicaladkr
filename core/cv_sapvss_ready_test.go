@@ -66,6 +66,17 @@ func TestCVComponentReadyCertificateCodecAndThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	cachedWires := make([][]byte, len(certificate.references))
+	for i := range certificate.references {
+		cachedWires[i] = certificate.references[i].descriptorWire
+	}
+	fastCertificate, fastWire, err := cvBuildComponentReadyCertificateWireFromValidatedWires(0, descriptors, cachedWires)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(fastCertificate.root, certificate.root) || !bytes.Equal(fastWire, wire) {
+		t.Fatal("cached ReadyCert builder changed canonical output")
+	}
 	decoded, err := cvDecodeComponentReadyCertificate(wire, cfg)
 	if err != nil {
 		t.Fatal(err)

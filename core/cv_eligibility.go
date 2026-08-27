@@ -131,7 +131,7 @@ func (s *cvComponentService) CollectEligibilityCoin(ctx context.Context) ([]byte
 	if err != nil {
 		return nil, err
 	}
-	targets := sortedUnique(s.cfg.OldCommittee)
+	targets := s.oldCommitteeOrder()
 	peers := make([]int, 0, len(targets)-1)
 	for _, target := range targets {
 		if target != s.localNode {
@@ -175,11 +175,21 @@ func (s *cvComponentService) handleEligibilityShare(msg Message) {
 	if err != nil || !bytes.Equal(digest, cvEligibilityCoinInput(s.cfg.SID, s.cfg.Epoch)) {
 		return
 	}
-	if _, ok := nodeSet(s.cfg.OldCommittee)[msg.From]; !ok ||
-		!s.cfg.runtime.coinSigner.VerifyShare(msg.From, cvEligibilityCoinDomain, digest, signature) {
+	if _, ok := s.oldMembers[msg.From]; !ok {
 		return
 	}
 	key := fmt.Sprintf("%x", digest)
+	s.mu.Lock()
+	if shares := s.eligibilityShares[key]; shares != nil {
+		if _, duplicate := shares[msg.From]; duplicate {
+			s.mu.Unlock()
+			return
+		}
+	}
+	s.mu.Unlock()
+	if !s.cfg.runtime.coinSigner.VerifyShare(msg.From, cvEligibilityCoinDomain, digest, signature) {
+		return
+	}
 	s.mu.Lock()
 	if s.eligibilityShares[key] == nil {
 		s.eligibilityShares[key] = make(map[int][]byte)

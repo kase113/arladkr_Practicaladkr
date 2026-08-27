@@ -212,6 +212,29 @@ func TestCVCompletedScalarExchangeRepliesToLatePeer(t *testing.T) {
 		t.Fatal("completed scalar exchange replied to an invalid late-peer share")
 	default:
 	}
+
+	pending := &cvPendingScalarSharesV2{
+		aggregate: aggregate,
+		outputs:   map[int]*cvScalarShareOutputV2{outputs[1].ReceiverID: outputs[1]},
+		wires:     map[int][]byte{outputs[1].ReceiverID: append([]byte(nil), peerWire...)},
+		ready:     make(chan struct{}, 1),
+	}
+	service.pendingScalarShares[key] = pending
+	service.handleAggregateShare(Message{From: outputs[1].ReceiverID, Body: peerWire})
+	select {
+	case reply := <-service.outbound:
+		if !bytes.Equal(reply.payload, localWire) {
+			t.Fatal("exact scalar-share retry returned the wrong local share")
+		}
+	default:
+		t.Fatal("exact scalar-share retry did not use the verified-wire fast path")
+	}
+	service.handleAggregateShare(Message{From: outputs[1].ReceiverID, Body: mutated})
+	select {
+	case <-service.outbound:
+		t.Fatal("mutated scalar-share retry used the exact-wire fast path")
+	default:
+	}
 }
 
 func cvAggregateForShareV2Fixture(

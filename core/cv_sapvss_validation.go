@@ -21,6 +21,9 @@ const (
 type cvValidationCertificateV2 struct {
 	SignerBitmap       []byte
 	AggregateSignature []byte
+	// canonicalWire is set by the strict decoder after validating the wire.
+	// Reusing it avoids reparsing the aggregate signature in later predicates.
+	canonicalWire []byte
 }
 
 type cvValidationBuildTimingsV2 struct {
@@ -54,6 +57,9 @@ func cvValidationCertificateV2CanonicalBytes(certificate *cvValidationCertificat
 		len(certificate.AggregateSignature) != bls12381.SizeOfG1AffineCompressed {
 		return nil, fmt.Errorf("invalid CV V2 validation certificate")
 	}
+	if len(certificate.canonicalWire) != 0 {
+		return certificate.canonicalWire, nil
+	}
 	var signature bls12381.G1Affine
 	consumed, err := signature.SetBytes(certificate.AggregateSignature)
 	if err != nil || consumed != len(certificate.AggregateSignature) || !cvValidG1(&signature, false) {
@@ -85,6 +91,7 @@ func cvDecodeValidationCertificateV2(wire []byte, validatorSample []int) (*cvVal
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 validation certificate")
 	}
+	certificate.canonicalWire = canonical
 	return certificate, nil
 }
 
@@ -157,8 +164,22 @@ func cvBuildValidationCertificateModeV2(
 }
 
 func cvVerifyValidationCertificateV2(certificate *cvValidationCertificateV2, header *cvAggregateHeaderV2, validatorSample []int, quorum int, material *cvValidatorKeyMaterialV2) error {
+	statement, err := cvValidationStatementV2(validatorSample, header)
+	if err != nil {
+		return err
+	}
+	return cvVerifyValidationCertificateV2WithStatement(certificate, statement, validatorSample, quorum, material)
+}
+
+// cvVerifyValidationCertificateV2WithStatement is used when the caller has
+// already authenticated and cached the statement for this request. It keeps
+// all certificate/bitmap/pairing checks while avoiding a second header encode.
+func cvVerifyValidationCertificateV2WithStatement(certificate *cvValidationCertificateV2, statement []byte, validatorSample []int, quorum int, material *cvValidatorKeyMaterialV2) error {
 	if material == nil || quorum <= 0 || quorum > len(validatorSample) || !cvValidValidatorSampleV2(validatorSample, material) {
 		return fmt.Errorf("invalid CV V2 validation verification input")
+	}
+	if len(statement) != 32 {
+		return fmt.Errorf("invalid CV V2 validation statement")
 	}
 	if _, err := cvValidationCertificateV2CanonicalBytes(certificate, validatorSample); err != nil {
 		return err
@@ -175,10 +196,6 @@ func cvVerifyValidationCertificateV2(certificate *cvValidationCertificateV2, hea
 	}
 	if signerCount < quorum || aggregatePublic.IsInfinity() {
 		return fmt.Errorf("insufficient CV V2 validation certificate signers")
-	}
-	statement, err := cvValidationStatementV2(validatorSample, header)
-	if err != nil {
-		return err
 	}
 	var signature bls12381.G1Affine
 	_, _ = signature.SetBytes(certificate.AggregateSignature)

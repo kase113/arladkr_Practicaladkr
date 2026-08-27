@@ -6,17 +6,16 @@ import (
 
 	bls12381 "github.com/consensys/gnark-crypto/ecc/bls12-381"
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
-	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 )
 
 // The gnark compressed-point decoder runs an order-r scalar multiplication per
 // point (IsInSubGroup). A leaf wire carries thousands of points, so the catalog
 // verification path decodes without that check and validates subgroup
-// membership once per decode unit with a random-coefficient linear
-// combination: if any decoded point lies outside the prime-order subgroup the
-// combination does too, except with probability at most len(points)/r, which
-// is negligible for wire-sized batches. Mask semantics mirror gnark's marshal
-// format exactly so canonical bytes keep their existing interpretation.
+// membership once per decode unit with a Fiat-Shamir linear combination: if
+// any decoded point lies outside the prime-order subgroup the combination does
+// too, except with probability at most len(points)/r, which is negligible for
+// wire-sized batches. Mask semantics mirror gnark's marshal format exactly so
+// canonical bytes keep their existing interpretation.
 const (
 	cvG1Mask                 byte = 0b111 << 5
 	cvG1Uncompressed         byte = 0b000 << 5
@@ -118,9 +117,12 @@ func cvDecodeG1WireUnchecked(encoded []byte) (bls12381.G1Affine, error) {
 }
 
 // cvAssertG1SubgroupBatch validates subgroup membership for decoded points
-// with a single random linear combination and one order-r check. Random
-// coefficients are drawn after the points are fixed, so a malformed encoder
-// cannot predict them.
+// with a single Fiat-Shamir linear combination and one order-r check. The
+// challenge is hashed from the exact point set, so the coefficients exist only
+// after the encoder has fixed its points; a malformed encoder cannot predict
+// them any better than it could predict an independent draw, while hashing
+// avoids a kernel-CSPRNG syscall per point that serializes concurrent
+// verifiers on the same host.
 func cvAssertG1SubgroupBatch(points []bls12381.G1Affine) error {
 	var combined bls12381.G1Affine
 	nonInfinity := 0
@@ -132,19 +134,30 @@ func cvAssertG1SubgroupBatch(points []bls12381.G1Affine) error {
 	if nonInfinity == 0 {
 		return nil
 	}
-	weights := make([]fr.Element, 0, nonInfinity)
 	batch := make([]bls12381.G1Affine, 0, nonInfinity)
+	statement := make([]byte, 0, nonInfinity*bls12381.SizeOfG1AffineCompressed)
 	for i := range points {
 		if points[i].IsInfinity() {
 			continue
 		}
-		var weight fr.Element
-		if _, err := weight.SetRandom(); err != nil {
+		batch = append(batch, points[i])
+		encoded := batch[len(batch)-1].Bytes()
+		statement = append(statement, encoded[:]...)
+	}
+	challenge, err := cvHashToFr(cvSubgroupBatchChallengeDomainV2, statement)
+	if err != nil {
+		return err
+	}
+	if challenge.IsZero() {
+		challenge, err = cvHashToFr(cvSubgroupBatchChallengeDomainV2, statement, []byte("nonzero"))
+		if err != nil {
 			return err
 		}
-		weights = append(weights, weight)
-		batch = append(batch, points[i])
+		if challenge.IsZero() {
+			return fmt.Errorf("zero CV subgroup batch challenge")
+		}
 	}
+	weights := cvFrPowers(challenge, nonInfinity)
 	result, err := cvG1LinearCombination(batch, weights)
 	if err != nil {
 		return err
@@ -155,6 +168,8 @@ func cvAssertG1SubgroupBatch(points []bls12381.G1Affine) error {
 	}
 	return nil
 }
+
+const cvSubgroupBatchChallengeDomainV2 = "CV-V2-SUBGROUP-BATCH-v1"
 
 func (r *cvWireReader) pointDeferred() (bls12381.G1Affine, error) {
 	encoded := r.scratch[:bls12381.SizeOfG1AffineCompressed]
@@ -189,9 +204,17 @@ func (r *cvWireReader) ciphertextDeferred() (cvElGamalCiphertext, error) {
 }
 
 // assertDecodedSubgroup finishes the deferred batch subgroup check for every
-// point decoded through pointDeferred/ciphertextDeferred on this reader.
+// point decoded through pointDeferred/ciphertextDeferred on this reader. When
+// the reader shares a leaf-level sidechannel, the points instead move to the
+// side's collector so the whole leaf pays one linear combination and one
+// order-r check.
 func (r *cvWireReader) assertDecodedSubgroup() error {
 	if len(r.deferredPoints) == 0 {
+		return nil
+	}
+	if r.side != nil && r.side.collectSubgroup {
+		r.side.deferredBatch = append(r.side.deferredBatch, r.deferredPoints...)
+		r.deferredPoints = r.deferredPoints[:0]
 		return nil
 	}
 	if err := cvAssertG1SubgroupBatch(r.deferredPoints); err != nil {

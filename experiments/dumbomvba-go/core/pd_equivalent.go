@@ -4,7 +4,39 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"time"
 )
+
+func pdResponsibilityFanout(n, f int) int {
+	raw := os.Getenv("PRACTICAL_MVBA_PD_RESPONSIBILITY_FANOUT")
+	if raw == "" {
+		return n - f
+	}
+	v, err := strconv.Atoi(raw)
+	if err != nil || v <= 0 || v > n {
+		return n
+	}
+	if v < n-f {
+		return n - f
+	}
+	return v
+}
+
+func pdResponsibilityRecipients(leader, n, fanout int) []int {
+	if n <= 0 || fanout <= 0 {
+		return nil
+	}
+	if fanout > n {
+		fanout = n
+	}
+	out := make([]int, fanout)
+	for offset := range out {
+		out[offset] = (leader + offset) % n
+	}
+	return out
+}
 
 type pdOutcome struct {
 	store *rcStoreMsg
@@ -45,14 +77,28 @@ func (m *DumboMVBA) runPDInstance(
 	seenLocked := make(map[int]struct{}, n)
 	seenStoreFromLeader := false
 	seenLockFromLeader := false
+	lockSent := false
+	pullAttempts := 0
+	replacementNext := pdResponsibilityFanout(n, f)
+	var pullTimer *time.Timer
+	var pullC <-chan time.Time
+	defer func() {
+		if pullTimer != nil {
+			pullTimer.Stop()
+		}
+	}()
+	var stripes [][]byte
+	var root []byte
+	var branches []merkleBranch
 
 	if m.cfg.ID == leader {
-		stripes, err := erasureEncodeValue(input, k, n)
+		var err error
+		stripes, err = erasureEncodeValue(input, k, n)
 		if err != nil {
 			return nil, err
 		}
-		root, branches := buildMerkle(stripes)
-		for i := 0; i < n; i++ {
+		root, branches = buildMerkle(stripes)
+		for _, i := range pdResponsibilityRecipients(leader, n, pdResponsibilityFanout(n, f)) {
 			sendPD(i, pdStoreMsg{
 				SID:    sid,
 				Root:   root,
@@ -64,15 +110,37 @@ func (m *DumboMVBA) runPDInstance(
 			})
 		}
 	}
+	if m.cfg.ID == leader && pdResponsibilityFanout(n, f) < n {
+		delay := m.cfg.RouteSendTimeout
+		if delay <= 0 {
+			delay = 300 * time.Millisecond
+		}
+		pullTimer = time.NewTimer(delay)
+		pullC = pullTimer.C
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
+		case <-pullC:
+			if m.cfg.ID == leader && !lockSent && len(storedShares) < threshold {
+				candidates := pdResponsibilityRecipients(leader, n, n)
+				if replacementNext < len(candidates) {
+					candidate := candidates[replacementNext]
+					replacementNext++
+					pullAttempts++
+					sendPD(candidate, pdStoreMsg{SID: sid, Root: append([]byte(nil), root...), Stripe: append([]byte(nil), stripes[candidate]...), Branch: merkleBranch{Index: branches[candidate].Index, Siblings: cloneSiblings(branches[candidate].Siblings)}})
+					pullTimer.Reset(time.Duration(1+pullAttempts/3) * time.Second)
+					pullC = pullTimer.C
+					continue
+				}
+			}
+			pullC = nil
 		case in := <-recv:
 			switch msg := in.Msg.Body.(type) {
 			case pdStoreMsg:
-				if msg.SID != sid || in.From != leader || seenStoreFromLeader {
+				if msg.SID != sid || in.From != leader || seenStoreFromLeader || msg.Branch.Index != m.cfg.ID {
 					continue
 				}
 				if !verifyMerkle(msg.Stripe, msg.Root, msg.Branch) {
@@ -89,6 +157,7 @@ func (m *DumboMVBA) runPDInstance(
 						Siblings: cloneSiblings(msg.Branch.Siblings),
 					},
 				}
+				m.cacheRCStore(out.store)
 				dig := pdCertificateDigest("PD_STORED", sid, leader, msg.Root)
 				share, err := m.signer.Sign("PD_STORED", dig)
 				if err != nil {
@@ -102,6 +171,17 @@ func (m *DumboMVBA) runPDInstance(
 				if m.cfg.ID != leader && out.lock != nil {
 					return out, nil
 				}
+			case pdPullRequest:
+				if m.cfg.ID != leader || msg.SID != sid || msg.Requester != in.From ||
+					msg.Requester < 0 || msg.Requester >= n || msg.Index < 0 || msg.Index >= n ||
+					len(root) == 0 || len(stripes) != n || (len(msg.Root) > 0 && !sameRoot(msg.Root, root)) {
+					continue
+				}
+				sendPD(msg.Requester, pdStoreMsg{
+					SID: sid, Root: append([]byte(nil), root...),
+					Stripe: append([]byte(nil), stripes[msg.Index]...),
+					Branch: merkleBranch{Index: branches[msg.Index].Index, Siblings: cloneSiblings(branches[msg.Index].Siblings)},
+				})
 			case pdStoredMsg:
 				if msg.SID != sid || m.cfg.ID != leader {
 					continue
@@ -115,11 +195,12 @@ func (m *DumboMVBA) runPDInstance(
 				}
 				seenStored[in.From] = struct{}{}
 				storedShares[in.From] = append([]byte(nil), msg.Share...)
-				if len(storedShares) >= threshold {
+				if len(storedShares) >= threshold && !lockSent {
 					certificate, err := recoverThresholdCertificate(m.signer, "PD_STORED", dig, storedShares, threshold)
 					if err != nil {
 						return nil, err
 					}
+					lockSent = true
 					broadcastPD(pdLockMsg{
 						SID: sid, Leader: leader, Root: append([]byte(nil), msg.Root...),
 						Certificate: append([]byte(nil), certificate...),

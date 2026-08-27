@@ -32,6 +32,23 @@ type cvDecodeSidechannelV2 struct {
 	// record, when non-nil, appends the uncompressed form of every deferred
 	// point as it is decoded, building the attachment a dealer will serve.
 	record []byte
+	// collectSubgroup moves each reader's deferred subgroup check into
+	// deferredBatch so a full leaf pays one linear combination and one
+	// order-r check instead of one pair per wire section.
+	collectSubgroup bool
+	deferredBatch   []bls12381.G1Affine
+}
+
+// finishDeferredSubgroupBatch runs the single leaf-level subgroup check and
+// resets the collector; acceptance semantics are unchanged because the leaf is
+// rejected here before any caller can use its structures.
+func (side *cvDecodeSidechannelV2) finishDeferredSubgroupBatch() error {
+	if side == nil || len(side.deferredBatch) == 0 {
+		return nil
+	}
+	points := side.deferredBatch
+	side.deferredBatch = nil
+	return cvAssertG1SubgroupBatch(points)
 }
 
 func newCVDecodeSidechannelHintsV2(hints []byte) *cvDecodeSidechannelV2 {
@@ -143,7 +160,18 @@ func (side *cvDecodeSidechannelV2) consumeHint(encoded []byte) (bls12381.G1Affin
 // hints; the wire stays compatible either way because the attachment is an
 // optional trailing field.
 func cvPayloadHintsEnabledV2() bool {
-	return strings.TrimSpace(strings.ToLower(os.Getenv("RLADKR_APDB_PAYLOAD_HINTS"))) != "0"
+	switch strings.TrimSpace(strings.ToLower(os.Getenv("RLADKR_APDB_PAYLOAD_HINTS"))) {
+	case "1", "true", "on", "enabled":
+		return true
+	default:
+		return false
+	}
+}
+
+// CVPayloadHintsEnabled reports the component-recovery wire profile used by
+// the benchmark process. Hints are an optional verified decode acceleration.
+func CVPayloadHintsEnabled() bool {
+	return cvPayloadHintsEnabledV2()
 }
 
 // cvMaxPayloadHintsBytesV2 bounds the attachment: hints hold 96 bytes per

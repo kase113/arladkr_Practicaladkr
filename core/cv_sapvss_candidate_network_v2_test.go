@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"sort"
 	"testing"
 	"time"
 )
@@ -58,10 +59,32 @@ func TestCVCertifiedCandidateV2AcceptsRelaysAndSuppressesDuplicates(t *testing.T
 	if relay == object.Header.ProposerID {
 		relay = cfg.OldCommittee[1]
 	}
-	receiver := cfg.OldCommittee[len(cfg.OldCommittee)-1]
-	if receiver == relay {
-		receiver = cfg.OldCommittee[len(cfg.OldCommittee)-2]
+	receiver := -1
+	for _, member := range cfg.OldCommittee {
+		if member != relay && member != object.Header.ProposerID {
+			receiver = member
+			break
+		}
 	}
+	if receiver < 0 {
+		t.Fatal("candidate retry test requires a non-origin receiver")
+	}
+	missingReceiver := -1
+	for _, member := range cfg.OldCommittee {
+		if member != relay && member != receiver && member != object.Header.ProposerID {
+			missingReceiver = member
+			break
+		}
+	}
+	if missingReceiver < 0 {
+		t.Fatal("candidate relay fallback test requires a fourth committee member")
+	}
+	// Exercise the retry path: loss of the first small ACK must trigger a
+	// digest probe, not an immediate retransmission of the full candidate.
+	transport.dropNext(receiver, relay, cvTagCertifiedCandidateACKV2)
+	// This target misses the publisher's first full object. A relay must probe,
+	// observe no ACK, then fall back to a complete candidate transmission.
+	transport.dropNext(relay, missingReceiver, cvTagCertifiedCandidateV2)
 	badObject := *object
 	badObject.Header.ProposerID++
 	badCtx, badCancel := context.WithTimeout(context.Background(), time.Second)
@@ -81,20 +104,45 @@ func TestCVCertifiedCandidateV2AcceptsRelaysAndSuppressesDuplicates(t *testing.T
 	if got.Header.ProposerID != object.Header.ProposerID || relay == object.Header.ProposerID {
 		t.Fatalf("candidate relay=%d embedded proposer=%d", relay, got.Header.ProposerID)
 	}
-
-	_, validators, err := cvAgreementEligibilitySamplesV2(public)
+	missingGot, err := services[missingReceiver].AwaitFirstCertifiedCandidateV2(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire, err := cvAgreementObjectV2CanonicalBytes(object, public.Params, validators)
+	if missingGot.Header.ProposerID != object.Header.ProposerID {
+		t.Fatalf("relay fallback proposer=%d want=%d", missingGot.Header.ProposerID, object.Header.ProposerID)
+	}
+	if !cvCandidateProbeBeforeFullForTargetForTest(transport, missingReceiver, relay) {
+		t.Fatal("missing receiver did not recover through relay probe-first full fallback")
+	}
+
+	proposers, validators, err := cvAgreementEligibilitySamplesV2(public)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire, err := cvAgreementObjectV2WireBytes(object, public.Params, validators)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, accepted, err := services[receiver].acceptCertifiedCandidateV2(wire); err != nil || accepted {
 		t.Fatalf("duplicate candidate accepted=%v err=%v", accepted, err)
 	}
+	if !services[receiver].isVerifiedCertifiedCandidateV2(wire) {
+		t.Fatal("verified canonical candidate was not reusable by the agreement predicate")
+	}
+	cachedPublic, err := services[receiver].agreementPublicContextV2()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cachedProposers, cachedValidators, err := cvAgreementEligibilitySamplesV2(cachedPublic)
+	if err != nil || !equalInts(sortedIntsForTest(cachedProposers), sortedIntsForTest(proposers)) ||
+		!equalInts(sortedIntsForTest(cachedValidators), sortedIntsForTest(validators)) {
+		t.Fatalf("cached eligibility samples proposers=%v validators=%v err=%v", cachedProposers, cachedValidators, err)
+	}
 	mutated := append([]byte(nil), wire...)
 	mutated[len(mutated)-1] ^= 1
+	if services[receiver].isVerifiedCertifiedCandidateV2(mutated) {
+		t.Fatal("mutated candidate matched the verified candidate cache")
+	}
 	if _, _, err := services[receiver].acceptCertifiedCandidateV2(mutated); err == nil {
 		t.Fatal("accepted mutated certified candidate")
 	}
@@ -116,10 +164,10 @@ func TestCVCertifiedCandidateV2AcceptsRelaysAndSuppressesDuplicates(t *testing.T
 	}
 
 	deadline := time.Now().Add(time.Second)
-	for !cvCandidateRelaySentForTest(transport, receiver, relay) && time.Now().Before(deadline) {
+	for !cvCandidateRelayAttemptedForTest(transport, receiver, relay) && time.Now().Before(deadline) {
 		time.Sleep(time.Millisecond)
 	}
-	if !cvCandidateRelaySentForTest(transport, receiver, relay) {
+	if !cvCandidateRelayAttemptedForTest(transport, receiver, relay) {
 		t.Fatalf("node %d accepted but did not relay candidate received from %d", receiver, relay)
 	}
 	// ACKs stop the per-peer retry loop. Allow relay workers to finish and
@@ -134,6 +182,14 @@ func TestCVCertifiedCandidateV2AcceptsRelaysAndSuppressesDuplicates(t *testing.T
 	if countCVCandidatePairForTest(transport, relay, receiver) > cvCandidateFanoutMaxAttemptsV2 {
 		t.Fatalf("candidate publisher exceeded bounded retry budget")
 	}
+	if countCVTagPairForTest(transport, relay, receiver, cvTagCertifiedCandidateACKProbeV2) == 0 {
+		t.Fatalf("lost candidate ACK did not trigger a digest probe: full=%d ack=%d",
+			countCVCandidatePairForTest(transport, relay, receiver),
+			countCVTagPairForTest(transport, receiver, relay, cvTagCertifiedCandidateACKV2))
+	}
+	if countCVCandidatePairForTest(transport, relay, receiver) != 1 {
+		t.Fatalf("lost candidate ACK retransmitted full candidate before probe recovery")
+	}
 	cancel()
 	if err := <-published; err != context.Canceled {
 		t.Fatalf("candidate publisher shutdown error=%v", err)
@@ -141,6 +197,12 @@ func TestCVCertifiedCandidateV2AcceptsRelaysAndSuppressesDuplicates(t *testing.T
 	if !bytes.Equal(got.Header.AggregateDigest, object.Header.AggregateDigest) {
 		t.Fatal("relayed candidate changed aggregate digest")
 	}
+}
+
+func sortedIntsForTest(values []int) []int {
+	copyValues := append([]int(nil), values...)
+	sort.Ints(copyValues)
+	return copyValues
 }
 
 func TestCVCandidateFanoutACKSignalsArePerPeer(t *testing.T) {
@@ -165,6 +227,85 @@ func TestCVCandidateFanoutACKSignalsArePerPeer(t *testing.T) {
 	case <-second:
 	case <-time.After(time.Second):
 		t.Fatal("second peer ACK did not wake its waiter")
+	}
+}
+
+func TestCVCandidateFanoutAttemptOrder(t *testing.T) {
+	probe := []byte("probe")
+	wire := []byte("candidate")
+	for _, test := range []struct {
+		name       string
+		probeFirst bool
+		want       []string
+	}{
+		{name: "origin-full-first", want: []string{
+			cvTagCertifiedCandidateV2, cvTagCertifiedCandidateACKProbeV2,
+			cvTagCertifiedCandidateV2, cvTagCertifiedCandidateACKProbeV2,
+		}},
+		{name: "relay-probe-first", probeFirst: true, want: []string{
+			cvTagCertifiedCandidateACKProbeV2, cvTagCertifiedCandidateV2,
+			cvTagCertifiedCandidateACKProbeV2, cvTagCertifiedCandidateV2,
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for attempt, want := range test.want {
+				tag, payload := cvCandidateFanoutAttemptV2(attempt, test.probeFirst, probe, wire)
+				if tag != want {
+					t.Fatalf("attempt=%d tag=%s want=%s", attempt, tag, want)
+				}
+				wantPayload := wire
+				if want == cvTagCertifiedCandidateACKProbeV2 {
+					wantPayload = probe
+				}
+				if !bytes.Equal(payload, wantPayload) {
+					t.Fatalf("attempt=%d payload=%q want=%q", attempt, payload, wantPayload)
+				}
+			}
+		})
+	}
+}
+
+func TestCVCandidateAnnounceIsBoundedByEligibleProposers(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service := &cvAPDBNetworkServiceV2{
+		ctx:                         ctx,
+		cfg:                         cvAPDBNetworkServiceConfigV2{Params: cvV2Params{proposerSampleSize: 1}},
+		eligibleProposers:           map[int]struct{}{3: {}},
+		candidateDigestByProposerV2: make(map[int]string, 1),
+		candidateOriginsV2:          make(map[string]map[int]struct{}, 1),
+		candidateFetchWaitersV2:     make(map[string]map[int]struct{}, 1),
+		certifiedCandidatesV2:       make(map[string][]byte, 1),
+		priorityOutbound:            make(chan cvOutboundMessageV2, 4),
+	}
+	firstDigest := string(bytes.Repeat([]byte{1}, 32))
+	secondDigest := string(bytes.Repeat([]byte{2}, 32))
+	announce := func(origin int, digest string) Message {
+		wire, err := cvEncodeCertifiedCandidateAnnounceV2(origin, digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return Message{From: origin, Body: wire}
+	}
+
+	service.handleCertifiedCandidateAnnounceV2(announce(2, firstDigest))
+	if len(service.candidateDigestByProposerV2) != 0 || len(service.priorityOutbound) != 0 {
+		t.Fatal("non-eligible proposer allocated candidate announce state")
+	}
+	service.handleCertifiedCandidateAnnounceV2(announce(3, firstDigest))
+	service.handleCertifiedCandidateAnnounceV2(announce(3, firstDigest))
+	service.handleCertifiedCandidateAnnounceV2(announce(3, secondDigest))
+	if got := service.candidateDigestByProposerV2[3]; got != firstDigest {
+		t.Fatal("eligible proposer candidate digest was replaced")
+	}
+	if len(service.candidateOriginsV2) != 1 || len(service.priorityOutbound) != 1 {
+		t.Fatalf("duplicate announces grew state: origins=%d fetches=%d", len(service.candidateOriginsV2), len(service.priorityOutbound))
+	}
+	if origins := service.registerCandidateFetchWaiterV2(secondDigest, 8); len(origins) != 0 || len(service.candidateFetchWaitersV2) != 0 {
+		t.Fatal("unknown candidate digest allocated fetch-waiter state")
+	}
+	if origins := service.registerCandidateFetchWaiterV2(firstDigest, 8); len(origins) != 1 || origins[0] != 3 {
+		t.Fatalf("known candidate fetch origins=%v", origins)
 	}
 }
 
@@ -262,6 +403,26 @@ func TestCVCertifiedCandidateACKV2Codec(t *testing.T) {
 	}
 }
 
+func TestCVCandidateACKProbeRequiresDeliveredCandidate(t *testing.T) {
+	digest := string(hashBytes([]byte("candidate-probe-delivery")))
+	service := &cvAPDBNetworkServiceV2{
+		processingCandidatesV2: make(map[string]struct{}),
+		certifiedCandidatesV2:  make(map[string][]byte),
+	}
+	if service.hasDeliveredCertifiedCandidateV2(digest) {
+		t.Fatal("unknown candidate digest counted as delivered")
+	}
+	service.processingCandidatesV2[digest] = struct{}{}
+	if !service.hasDeliveredCertifiedCandidateV2(digest) {
+		t.Fatal("candidate under verification not counted as delivered")
+	}
+	delete(service.processingCandidatesV2, digest)
+	service.certifiedCandidatesV2[digest] = []byte("verified-wire")
+	if !service.hasDeliveredCertifiedCandidateV2(digest) {
+		t.Fatal("verified candidate not counted as delivered")
+	}
+}
+
 func TestCVCertifiedCandidatePullCodecs(t *testing.T) {
 	digest := string(hashBytes([]byte("candidate-pull-test")))
 	announce, err := cvEncodeCertifiedCandidateAnnounceV2(7, digest)
@@ -293,11 +454,12 @@ func TestCVCertifiedCandidatePullCodecs(t *testing.T) {
 	}
 }
 
-func cvCandidateRelaySentForTest(transport *cvRouterTestTransport, from, excluded int) bool {
+func cvCandidateRelayAttemptedForTest(transport *cvRouterTestTransport, from, excluded int) bool {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
 	for _, message := range transport.sent {
-		if message.Tag == cvTagCertifiedCandidateV2 && message.From == from && message.To != excluded {
+		if (message.Tag == cvTagCertifiedCandidateV2 || message.Tag == cvTagCertifiedCandidateACKProbeV2) &&
+			message.From == from && message.To != excluded {
 			return true
 		}
 	}
@@ -305,15 +467,37 @@ func cvCandidateRelaySentForTest(transport *cvRouterTestTransport, from, exclude
 }
 
 func countCVCandidatePairForTest(transport *cvRouterTestTransport, from, to int) int {
+	return countCVTagPairForTest(transport, from, to, cvTagCertifiedCandidateV2)
+}
+
+func countCVTagPairForTest(transport *cvRouterTestTransport, from, to int, tag string) int {
 	transport.mu.Lock()
 	defer transport.mu.Unlock()
 	count := 0
 	for _, message := range transport.sent {
-		if message.Tag == cvTagCertifiedCandidateV2 && message.From == from && message.To == to {
+		if message.Tag == tag && message.From == from && message.To == to {
 			count++
 		}
 	}
 	return count
+}
+
+func cvCandidateProbeBeforeFullForTargetForTest(transport *cvRouterTestTransport, to, publisher int) bool {
+	transport.mu.Lock()
+	defer transport.mu.Unlock()
+	probeSeen := false
+	for _, message := range transport.sent {
+		if message.To != to || message.From == publisher {
+			continue
+		}
+		switch message.Tag {
+		case cvTagCertifiedCandidateACKProbeV2:
+			probeSeen = true
+		case cvTagCertifiedCandidateV2:
+			return probeSeen
+		}
+	}
+	return false
 }
 
 func countCVCandidateAfterACKForTest(transport *cvRouterTestTransport, from, to int) int {

@@ -101,6 +101,23 @@ func (c *cvAPDBLockCollectorV2) AddStoredShare(from int, wire []byte) (bool, err
 	if err != nil {
 		return false, err
 	}
+	return c.AddDecodedStoredShare(from, response, wire)
+}
+
+func (c *cvAPDBLockCollectorV2) AddDecodedStoredShare(from int, response *cvAPDBStoredShareV2, wire []byte) (bool, error) {
+	if c == nil || response == nil || len(wire) == 0 {
+		return false, fmt.Errorf("invalid CV V2 decoded APDB stored share")
+	}
+	if _, ok := c.memberIndex[from]; !ok {
+		return false, fmt.Errorf("CV V2 APDB stored share from non-holder")
+	}
+	c.mu.Lock()
+	if previous, exists := c.shareWires[from]; exists && bytes.Equal(previous, wire) {
+		complete := len(c.shares) >= c.signer.Threshold()
+		c.mu.Unlock()
+		return complete, nil
+	}
+	c.mu.Unlock()
 	if !bytes.Equal(response.InstanceDigest, c.encoded.instanceDigest) || !bytes.Equal(response.Root, c.encoded.root) ||
 		!c.signer.VerifyShare(from, cvAPDBStoredDomain, c.statement, response.Share) {
 		return false, fmt.Errorf("invalid CV V2 APDB stored share")
@@ -186,6 +203,18 @@ func cvHandleAPDBRecoveryRequestV2(
 	lock, err := cvDecodeAPDBLockV2(requestWire)
 	if err != nil || cvVerifyAPDBLockV2(lock, apdbSigner) != nil {
 		return nil, fmt.Errorf("invalid CV V2 APDB recovery lock")
+	}
+	return cvHandleAPDBRecoveryLockV2(sid, epoch, requester, holder, oldRoster, lock,
+		totalShards, shardBytes, holderStore)
+}
+
+func cvHandleAPDBRecoveryLockV2(
+	sid string, epoch uint64, requester, holder int, oldRoster []int, lock *cvAPDBLockV2,
+	totalShards, shardBytes int, holderStore *cvAPDBHolderStoreV2,
+) ([]byte, error) {
+	if !equalInts(oldRoster, sortedUnique(oldRoster)) || !cvMemberInRosterV2(requester, oldRoster) ||
+		!cvMemberInRosterV2(holder, oldRoster) || holderStore == nil || lock == nil {
+		return nil, fmt.Errorf("invalid CV V2 APDB recovery participants")
 	}
 	store, err := holderStore.Read(sid, epoch, holder, lock.InstanceDigest, lock.Root, totalShards, shardBytes)
 	if err != nil {

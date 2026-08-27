@@ -54,6 +54,8 @@ func TestFormatBenchResultIncludesEffectiveKappa(t *testing.T) {
 
 func TestFormatBenchResultIncludesAPVSSModeAndBackendStatus(t *testing.T) {
 	t.Setenv("RLADKR_CV_PRIMARY_GRACE_MS", "")
+	t.Setenv("RLADKR_CV_PROPOSER_SLOT_GRACE_MS", "")
+	t.Setenv("RLADKR_VALIDATION_FIRST_WAVE_GRACE_MS", "")
 	line := formatBenchResult(benchResultInput{
 		runs:                  1,
 		apvssMode:             core.APVSSModeFullPublicVE,
@@ -65,6 +67,9 @@ func TestFormatBenchResultIncludesAPVSSModeAndBackendStatus(t *testing.T) {
 	for _, field := range []string{
 		"cv_candidate_mode=" + core.CVAggregateCandidateMode,
 		"cv_primary_grace_ms=10000",
+		"cv_proposer_slot_grace_ms=10000",
+		"cv_validation_first_wave_extra=2",
+		"cv_validation_first_wave_grace_ms=2000",
 		"cv_primary_pool_grace_ms=250",
 		"apvss_mode=full-public-ve",
 		"apvss_backend_status=functional-prototype-backend-gate-pending",
@@ -172,6 +177,7 @@ func TestFormatBenchResultIncludesARLADKRMetrics(t *testing.T) {
 }
 
 func TestFormatBenchResultIncludesCVPhaseLabels(t *testing.T) {
+	t.Setenv("RLADKR_APDB_PAYLOAD_HINTS", "1")
 	sampling, err := core.ResolveCVV2Sampling(7, 2, "smoke", 3, 3)
 	if err != nil {
 		t.Fatal(err)
@@ -197,6 +203,9 @@ func TestFormatBenchResultIncludesCVPhaseLabels(t *testing.T) {
 			cvProposerRecoverySentBytes: 401, cvProposerRecoveryRecvBytes: 402,
 			cvProposerRecoveryMs: 4.5, cvProposerCatalogVerificationMs: 4.75,
 			cvProposerCatalogScanCount: 3, cvProposerRejectedCount: 1,
+			cvDealerPayloadSentBytes: 411, cvDealerHintSentBytes: 412,
+			cvHolderFragmentSentBytes: 413, cvComponentRecoveryLateRecvBytes: 414,
+			cvComponentDirectPayloadHits: 4, cvComponentFragmentRecoveries: 5,
 			cvValidatorComponentRecoverySentBytes: 501, cvValidatorComponentRecoveryRecvBytes: 502,
 			cvValidatorComponentRecoveryMs: 5.5, cvValidatorAggregateRecoverySentBytes: 601,
 			cvValidatorAggregateRecoveryRecvBytes: 602, cvValidatorAggregateRecoveryMs: 6.5,
@@ -241,6 +250,11 @@ func TestFormatBenchResultIncludesCVPhaseLabels(t *testing.T) {
 		"mean_proposer_component_recovery_sent_bytes=401", "mean_proposer_component_recovery_recv_bytes=402",
 		"mean_proposer_component_recovery_ms=4.50", "mean_proposer_catalog_scan_count=3",
 		"mean_proposer_rejected_component_count=1",
+		"cv_payload_hints=true", "cv_component_recovery_schedule=dealer-first", "cv_component_direct_grace_ms=250",
+		"cv_component_dealer_response=normal",
+		"mean_dealer_payload_sent_bytes=411", "mean_dealer_hint_sent_bytes=412",
+		"mean_holder_fragment_sent_bytes=413", "mean_component_recovery_late_recv_bytes=414",
+		"mean_component_direct_payload_hits=4", "mean_component_fragment_recoveries=5",
 		"mean_validator_component_recovery_sent_bytes=501", "mean_validator_component_recovery_recv_bytes=502",
 		"mean_validator_component_recovery_ms=5.50",
 		"mean_validator_aggregate_recovery_sent_bytes=601", "mean_validator_aggregate_recovery_recv_bytes=602",

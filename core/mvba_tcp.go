@@ -528,6 +528,11 @@ func (h *arladkrTCPHub) recordEquivalentBytes(msg dmvba.ProtocolMessage, n int, 
 	}
 	class := dmvba.ClassifyEquivalentMessage(msg)
 	if class == dmvba.EquivalentMessageOther {
+		if sent {
+			h.runtime.recordNamedSentBytes("mvba_other", n)
+		} else {
+			h.runtime.recordNamedRecvBytes("mvba_other", n)
+		}
 		return
 	}
 	name := "mvba_" + string(class)

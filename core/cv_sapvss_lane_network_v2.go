@@ -23,13 +23,14 @@ type cvLaneACKMessageV2 struct {
 }
 
 type cvPendingLaneACKsV2 struct {
-	offers    []*cvReceiverLaneOfferV2
-	witnesses []*cvDealerReceiverWitnessV2
-	acks      map[int]*cvACKEvidenceV2
-	quorum    int
-	frozen    bool
-	ready     chan struct{}
-	allReady  chan struct{}
+	offers       []*cvReceiverLaneOfferV2
+	offerDigests [][]byte
+	witnesses    []*cvDealerReceiverWitnessV2
+	acks         map[int]*cvACKEvidenceV2
+	quorum       int
+	frozen       bool
+	ready        chan struct{}
+	allReady     chan struct{}
 }
 
 func cvLaneACKMessageV2CanonicalBytes(message *cvLaneACKMessageV2, context *cvLeafContextV2) ([]byte, error) {
@@ -135,9 +136,10 @@ func (s *cvAPDBNetworkServiceV2) BuildLeafMaterialV2(ctx context.Context) (*cvBu
 		return nil, fmt.Errorf("invalid CV V2 lane ACK quorum")
 	}
 	pending := &cvPendingLaneACKsV2{
-		offers:    make([]*cvReceiverLaneOfferV2, len(s.cfg.NewRoster)),
-		witnesses: make([]*cvDealerReceiverWitnessV2, len(s.cfg.NewRoster)),
-		acks:      make(map[int]*cvACKEvidenceV2, quorum), quorum: quorum,
+		offers:       make([]*cvReceiverLaneOfferV2, len(s.cfg.NewRoster)),
+		offerDigests: make([][]byte, len(s.cfg.NewRoster)),
+		witnesses:    make([]*cvDealerReceiverWitnessV2, len(s.cfg.NewRoster)),
+		acks:         make(map[int]*cvACKEvidenceV2, quorum), quorum: quorum,
 		ready: make(chan struct{}, 1), allReady: make(chan struct{}, 1),
 	}
 	offerWires := make([][]byte, len(s.cfg.NewRoster))
@@ -159,6 +161,9 @@ func (s *cvAPDBNetworkServiceV2) BuildLeafMaterialV2(ctx context.Context) (*cvBu
 		offerWires[i], err = cvReceiverLaneOfferV2CanonicalBytesAfterValidation(
 			s.cfg.LeafContext, s.cfg.LocalNode, pending.offers[i],
 		)
+		if err == nil {
+			pending.offerDigests[i] = cvLaneOfferDigestV2(offerWires[i])
+		}
 		buildErrs[i] = err
 	}
 	if workers := cvLeafBuildWorkers(len(s.cfg.NewRoster)); workers > 1 {

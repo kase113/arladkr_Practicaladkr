@@ -25,6 +25,18 @@ type cvAPDBRecoveryCollectorV2 struct {
 	payloadHints   []byte
 }
 
+// complete reports whether the recovery threshold is already satisfied. It is
+// intentionally a read-only fast path used to discard late network responses;
+// the authenticated payload/store remains owned by the collector.
+func (c *cvAPDBRecoveryCollectorV2) complete() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.payload != nil || len(c.stores) >= c.dataShards
+}
+
 func newCVAPDBRecoveryCollectorV2(
 	lock *cvAPDBLockV2, oldRoster []int, dataShards, shardBytes, maximumPayload int,
 	apdbSigner *tblsThresholdSigner, bindingCheck func([]byte) error,
@@ -98,13 +110,22 @@ func (c *cvAPDBRecoveryCollectorV2) AddStore(from int, wire []byte) (bool, error
 	if c == nil {
 		return false, fmt.Errorf("nil CV V2 APDB recovery collector")
 	}
-	expectedIndex, member := c.memberIndex[from]
-	if !member {
-		return false, fmt.Errorf("CV V2 APDB recovery response from non-holder")
-	}
 	store, err := cvDecodeAPDBStoreV2(wire, c.totalShards, c.shardBytes)
 	if err != nil {
 		return false, err
+	}
+	return c.AddDecodedStore(from, store, wire)
+}
+
+// AddDecodedStore records a store that has already passed the strict wire and
+// Merkle verification performed by cvDecodeAPDBStoreV2.
+func (c *cvAPDBRecoveryCollectorV2) AddDecodedStore(from int, store *cvAPDBStoreV2, wire []byte) (bool, error) {
+	if c == nil || store == nil || len(wire) == 0 {
+		return false, fmt.Errorf("invalid CV V2 decoded APDB recovery store")
+	}
+	expectedIndex, member := c.memberIndex[from]
+	if !member {
+		return false, fmt.Errorf("CV V2 APDB recovery response from non-holder")
 	}
 	if store.Index != expectedIndex || !bytes.Equal(store.InstanceDigest, c.lock.InstanceDigest) ||
 		!bytes.Equal(store.Root, c.lock.Root) {
@@ -144,9 +165,45 @@ func (c *cvAPDBRecoveryCollectorV2) AddPayload(_ int, wire []byte) (bool, error)
 	if err != nil {
 		return false, err
 	}
+	return c.addDecodedPayload(response)
+}
+
+// addDecodedPayload accepts the network worker's already bounded and
+// canonical transport decode. Root reconstruction and payload binding remain
+// collector-owned, so bypassing a second DEFLATE pass does not bypass APDB
+// authentication.
+func (c *cvAPDBRecoveryCollectorV2) addDecodedPayload(response *cvAPDBPayloadResponseV2) (bool, error) {
+	return c.addDecodedPayloadMode(response, false)
+}
+
+// addDecodedPayloadOwned transfers payload/hints from the bounded transport
+// decoder. The decoder returns independent slices, so no second full-payload
+// copy is needed on the authenticated network path.
+func (c *cvAPDBRecoveryCollectorV2) addDecodedPayloadOwned(response *cvAPDBPayloadResponseV2) (bool, error) {
+	return c.addDecodedPayloadMode(response, true)
+}
+
+func (c *cvAPDBRecoveryCollectorV2) addDecodedPayloadMode(response *cvAPDBPayloadResponseV2, takeOwnership bool) (bool, error) {
+	if c == nil || response == nil {
+		return false, fmt.Errorf("nil CV V2 APDB recovery payload")
+	}
 	if !bytes.Equal(response.InstanceDigest, c.lock.InstanceDigest) {
 		return false, fmt.Errorf("CV V2 APDB payload response does not match lock")
 	}
+	// Once a payload has passed the root check, duplicate responses can be
+	// decided by byte equality. Avoid repeating the full RS encoding/root
+	// computation for every retransmission; conflicting bytes are rejected
+	// immediately and never replace the authenticated payload.
+	c.mu.Lock()
+	if c.payload != nil {
+		if !bytes.Equal(c.payload, response.Payload) {
+			c.mu.Unlock()
+			return false, fmt.Errorf("conflicting CV V2 APDB payload response")
+		}
+		c.mu.Unlock()
+		return true, nil
+	}
+	c.mu.Unlock()
 	reencoded, err := cvAPDBEncodeSizedV2(
 		c.lock.InstanceDigest, response.Payload, c.dataShards, c.totalShards, c.shardBytes, c.maximumPayload,
 	)
@@ -159,16 +216,27 @@ func (c *cvAPDBRecoveryCollectorV2) AddPayload(_ int, wire []byte) (bool, error)
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.payloadHints == nil && len(hints) > 0 {
-		c.payloadHints = append([]byte(nil), hints...)
-	}
+	// Another worker may have accepted a response while this one was doing
+	// the root check. Preserve the first authenticated payload and reject any
+	// conflicting result.
 	if c.payload != nil {
 		if !bytes.Equal(c.payload, response.Payload) {
 			return false, fmt.Errorf("conflicting CV V2 APDB payload response")
 		}
 		return true, nil
 	}
-	c.payload = append([]byte(nil), response.Payload...)
+	if c.payloadHints == nil && len(hints) > 0 {
+		if takeOwnership {
+			c.payloadHints = hints
+		} else {
+			c.payloadHints = append([]byte(nil), hints...)
+		}
+	}
+	if takeOwnership {
+		c.payload = response.Payload
+	} else {
+		c.payload = append([]byte(nil), response.Payload...)
+	}
 	return true, nil
 }
 
@@ -184,8 +252,15 @@ func (c *cvAPDBRecoveryCollectorV2) RecoveredHints() []byte {
 }
 
 func (c *cvAPDBRecoveryCollectorV2) Recover() ([]byte, error) {
+	payload, _, err := c.recoverWithSource()
+	return payload, err
+}
+
+// recoverWithSource reports whether the authenticated full-payload fast path
+// supplied the bytes actually returned to the caller.
+func (c *cvAPDBRecoveryCollectorV2) recoverWithSource() ([]byte, bool, error) {
 	if c == nil {
-		return nil, fmt.Errorf("nil CV V2 APDB recovery collector")
+		return nil, false, fmt.Errorf("nil CV V2 APDB recovery collector")
 	}
 	c.mu.Lock()
 	payload := c.payload
@@ -193,15 +268,15 @@ func (c *cvAPDBRecoveryCollectorV2) Recover() ([]byte, error) {
 	if payload != nil {
 		if c.bindingCheck != nil {
 			if err := c.bindingCheck(payload); err != nil {
-				return nil, fmt.Errorf("CV V2 APDB binding check: %w", err)
+				return nil, true, fmt.Errorf("CV V2 APDB binding check: %w", err)
 			}
 		}
-		return payload, nil
+		return payload, true, nil
 	}
 	c.mu.Lock()
 	if len(c.stores) < c.dataShards {
 		c.mu.Unlock()
-		return nil, fmt.Errorf("insufficient CV V2 APDB recovery responses")
+		return nil, false, fmt.Errorf("insufficient CV V2 APDB recovery responses")
 	}
 	stores := make([]cvAPDBStoreV2, 0, len(c.stores))
 	for index := 0; index < c.totalShards; index++ {
@@ -210,7 +285,8 @@ func (c *cvAPDBRecoveryCollectorV2) Recover() ([]byte, error) {
 		}
 	}
 	c.mu.Unlock()
-	return cvRecoverAPDBV2(
+	recovered, err := cvRecoverAPDBV2(
 		&c.lock, stores, c.dataShards, c.totalShards, c.shardBytes, c.maximumPayload, c.bindingCheck,
 	)
+	return recovered, false, err
 }

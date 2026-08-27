@@ -3,6 +3,10 @@ package core
 import (
 	"context"
 	"fmt"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 )
 
 type cvProposerSlotRunnerV2 func(context.Context, int) error
@@ -10,6 +14,26 @@ type cvProposerSlotRunnerV2 func(context.Context, int) error
 type cvProposerSlotResultV2 struct {
 	proposer int
 	err      error
+}
+
+func cvSampledProposerSlotGraceV2(proposerSampleSize int) time.Duration {
+	if raw := strings.TrimSpace(os.Getenv("RLADKR_CV_PROPOSER_SLOT_GRACE_MS")); raw != "" {
+		milliseconds, err := strconv.Atoi(raw)
+		if err == nil && milliseconds >= 0 {
+			return time.Duration(milliseconds) * time.Millisecond
+		}
+	}
+	// Staging reduced both latency and bytes at kappa=6. At kappa>=11 the
+	// primary catalog exceeded the grace and the delayed backup wave regressed
+	// quorum latency, so larger samples retain the concurrent path.
+	if proposerSampleSize > 6 {
+		return 0
+	}
+	return cvAggregatePrimaryGrace()
+}
+
+func CVSampledProposerSlotGrace(proposerSampleSize int) time.Duration {
+	return cvSampledProposerSlotGraceV2(proposerSampleSize)
 }
 
 func cvRunSampledProposerSlotsV2(
@@ -24,24 +48,57 @@ func cvRunSampledProposerSlotsV2(
 	}
 	pipelineCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	started := make(chan int, len(proposers))
 	results := make(chan cvProposerSlotResultV2, len(proposers))
-	for _, proposer := range proposers {
-		proposer := proposer
+	launch := func(proposer int) {
 		go func() {
-			started <- proposer
 			results <- cvProposerSlotResultV2{proposer: proposer, err: run(pipelineCtx, proposer)}
 		}()
 	}
-	for range proposers {
-		select {
-		case <-started:
-		case <-ctx.Done():
-			return nil, ctx.Err()
+	launch(proposers[0])
+
+	backupsLaunched := len(proposers) == 1
+	var graceTimer *time.Timer
+	var grace <-chan time.Time
+	launchBackups := func() {
+		if backupsLaunched {
+			return
+		}
+		backupsLaunched = true
+		for _, proposer := range proposers[1:] {
+			launch(proposer)
+		}
+		if graceTimer != nil {
+			if !graceTimer.Stop() {
+				select {
+				case <-graceTimer.C:
+				default:
+				}
+			}
+			grace = nil
 		}
 	}
+	if !backupsLaunched {
+		if primaryGrace := cvSampledProposerSlotGraceV2(len(proposers)); primaryGrace <= 0 {
+			launchBackups()
+		} else {
+			graceTimer = time.NewTimer(primaryGrace)
+			grace = graceTimer.C
+			defer graceTimer.Stop()
+		}
+	}
+
 	failed := make(map[int]error, len(proposers))
-	for len(failed) < len(proposers) {
+	for {
+		if backupsLaunched && len(failed) == len(proposers) {
+			select {
+			case candidate, ok := <-candidates:
+				if ok && candidate != nil {
+					return candidate, nil
+				}
+			default:
+			}
+			return nil, fmt.Errorf("all sampled CV V2 proposer slots failed")
+		}
 		select {
 		case candidate, ok := <-candidates:
 			if !ok || candidate == nil {
@@ -50,18 +107,16 @@ func cvRunSampledProposerSlotsV2(
 			return candidate, nil
 		case result := <-results:
 			failed[result.proposer] = result.err
+			if result.proposer == proposers[0] {
+				// A failed primary cannot benefit from the optimistic grace.
+				launchBackups()
+			}
+		case <-grace:
+			launchBackups()
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
 	}
-	select {
-	case candidate, ok := <-candidates:
-		if ok && candidate != nil {
-			return candidate, nil
-		}
-	default:
-	}
-	return nil, fmt.Errorf("all sampled CV V2 proposer slots failed")
 }
 
 func runCVProposerSlotV2(
@@ -136,6 +191,9 @@ func runCVProposerSlotV2(
 		if aggregateErr != nil {
 			return aggregateErr
 		}
+		if aggregateErr = service.rememberVerifiedAggregatePayloadV2(aggregateInstance, arc.Root, aggregatePayload); aggregateErr != nil {
+			return aggregateErr
+		}
 		payloadDigest, aggregateErr := cvAggregatePayloadDigestV2(aggregatePayload)
 		if aggregateErr != nil {
 			return aggregateErr
@@ -161,5 +219,5 @@ func runCVProposerSlotV2(
 		ContributorCoin: request.ContributorCoin, SelectedIndices: append([]int(nil), request.SelectedIndices...),
 		VCert: *vCert, ARC: request.ARC,
 	}
-	return service.PublishCertifiedCandidateV2(ctx, candidate)
+	return service.publishLocallyCertifiedCandidateV2(ctx, candidate)
 }

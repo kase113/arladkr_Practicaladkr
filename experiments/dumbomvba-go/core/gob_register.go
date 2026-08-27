@@ -9,6 +9,7 @@ func init() {
 	gob.Register([]SigShare{})
 
 	gob.Register(pdStoreMsg{})
+	gob.Register(pdPullRequest{})
 	gob.Register(pdStoredMsg{})
 	gob.Register(pdLockMsg{})
 	gob.Register(pdLockedMsg{})
@@ -16,6 +17,7 @@ func init() {
 	gob.Register(quitReadyMsg{})
 	gob.Register(quitFinishMsg{})
 	gob.Register(rcStoreMsg{})
+	gob.Register(rcPullRequest{})
 	gob.Register(rcLockMsg{})
 	gob.Register(rcPrepareMsg{})
 	gob.Register(coinShareMsg{})

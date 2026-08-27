@@ -176,10 +176,7 @@ func (s *cvAPDBNetworkServiceV2) AwaitVerifiedComponentCatalogV2(
 					s.experimentMu.Unlock()
 				}
 			} else if len(s.verifiedCatalogV2) == 0 {
-				s.verifiedComponentsV2[dealer] = cvVerifiedComponentV2{
-					ref: cloneComponentRefV2(result.ref), leafDigest: append([]byte(nil), result.leafDigest...),
-					payload: append([]byte(nil), result.payload...), leaf: result.leaf,
-				}
+				s.storeVerifiedComponentLockedV2(result.ref, result.leafDigest, result.payload, result.leaf)
 			}
 			s.mu.Unlock()
 		}
@@ -210,19 +207,16 @@ func (s *cvAPDBNetworkServiceV2) recoverComponentPayloadV2(
 	ctx context.Context, ref cvComponentRefV2,
 ) cvComponentVerificationResultV2 {
 	result := cvComponentVerificationResultV2{ref: cloneComponentRefV2(ref)}
-	payload, hints, err := s.recoverComponentForPurpose(
-		ctx, &ref.Lock, nil, cvRecoveryProposerCatalogV2, ref.Header.DealerID,
-	)
+	payload, hints, err := s.recoveredComponentPayloadV2(ctx, ref, cvRecoveryProposerCatalogV2)
 	if err != nil {
 		result.recoverErr = fmt.Errorf("recover CV V2 component %d: %w", ref.Header.DealerID, err)
 		return result
 	}
-	if !bytes.Equal(cvComponentPayloadDigestV2(payload), ref.Header.PayloadDigest) {
-		result.verifyErr = fmt.Errorf("CV V2 component %d payload digest mismatch", ref.Header.DealerID)
-		return result
-	}
-	result.payload = append([]byte(nil), payload...)
-	result.payloadHints = append([]byte(nil), hints...)
+	// recoveredComponentPayloadV2 only returns payloads that are already bound
+	// to ref.Header.PayloadDigest. Its cache entries are immutable, and the leaf
+	// decoder is read-only; the verified catalog takes its own copy on accept.
+	result.payload = payload
+	result.payloadHints = hints
 	return result
 }
 
@@ -406,10 +400,7 @@ func (s *cvAPDBNetworkServiceV2) verifiedComponentLeafV2(
 
 	s.mu.Lock()
 	if err == nil {
-		s.verifiedComponentsV2[dealer] = cvVerifiedComponentV2{
-			ref: cloneComponentRefV2(ref), leafDigest: append([]byte(nil), leaf.Digest...),
-			payload: append([]byte(nil), payload...), leaf: leaf,
-		}
+		s.storeVerifiedComponentLockedV2(ref, leaf.Digest, payload, leaf)
 	}
 	call.leaf = leaf
 	call.err = err
@@ -417,6 +408,24 @@ func (s *cvAPDBNetworkServiceV2) verifiedComponentLeafV2(
 	close(call.done)
 	s.mu.Unlock()
 	return leaf, err
+}
+
+// storeVerifiedComponentLockedV2 transfers an authenticated, fully decoded
+// payload into the immutable verified cache. The caller must hold s.mu and
+// must not mutate payload or leaf after the transfer.
+func (s *cvAPDBNetworkServiceV2) storeVerifiedComponentLockedV2(
+	ref cvComponentRefV2, leafDigest, payload []byte, leaf *cvLeafV2,
+) {
+	if s.verifiedComponentsV2 == nil {
+		s.verifiedComponentsV2 = make(map[int]cvVerifiedComponentV2)
+	}
+	s.verifiedComponentsV2[ref.Header.DealerID] = cvVerifiedComponentV2{
+		ref: cloneComponentRefV2(ref), leafDigest: append([]byte(nil), leafDigest...),
+		payload: payload, leaf: leaf,
+	}
+	// The verified entry is checked first by recoveredComponentPayloadV2, so
+	// its earlier recovery payload and decode hints are now redundant.
+	delete(s.recoveredPayloadsV2, cvRecoveredComponentPayloadKeyV2(ref))
 }
 
 func (s *cvAPDBNetworkServiceV2) VerifiedComponentLeavesV2(
@@ -507,14 +516,20 @@ func equalComponentRefsV2(left, right cvComponentRefV2) bool {
 }
 
 func (s *cvAPDBNetworkServiceV2) handleComponentRefV2(msg Message) {
-	ref, err := cvDecodeComponentRefV2(msg.Body)
-	if err != nil || ref.Header.DealerID != msg.From || !bytes.Equal(ref.Header.ContextDigest, s.cfg.ExpectedContext) {
-		return
-	}
+	// The authenticated transport already binds msg.From to the dealer. Once
+	// that dealer's reference is known, duplicate announcements need no decode;
+	// the existing path also ignored replacement wires for known dealers.
 	s.mu.Lock()
-	_, knownDealer := s.componentRefsV2[ref.Header.DealerID]
+	knownDealer := false
+	if _, ok := s.componentRefsV2[msg.From]; ok {
+		knownDealer = true
+	}
 	s.mu.Unlock()
 	if knownDealer {
+		return
+	}
+	ref, err := cvDecodeComponentRefV2(msg.Body)
+	if err != nil || ref.Header.DealerID != msg.From || !bytes.Equal(ref.Header.ContextDigest, s.cfg.ExpectedContext) {
 		return
 	}
 	if err := cvValidateComponentRefV2(ref, s.apdbSigner); err != nil {

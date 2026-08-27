@@ -2,7 +2,6 @@ package core
 
 import (
 	"fmt"
-	"strings"
 )
 
 type aggRLOMaterializedBinding struct {
@@ -120,9 +119,6 @@ func validateFinalDealerSet(cfg Config, dealers []int) ([]int, error) {
 func validateAggRLOLock(cfg Config, rlo *AggRLO) error {
 	if cfg.runtime == nil || cfg.runtime.lockSigner == nil || rlo == nil {
 		return fmt.Errorf("AggLock runtime is unavailable")
-	}
-	if strings.EqualFold(cfg.AblationMode, "no-agclock") {
-		return nil
 	}
 	threshold := len(cfg.runtime.oldOrder) - cfg.FOld
 	if rlo.Lock.Threshold != threshold {

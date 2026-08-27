@@ -219,7 +219,13 @@ func cvG1LinearCombination(points []bls12381.G1Affine, coefficients []fr.Element
 	}
 	if len(points) >= 4 {
 		var result bls12381.G1Affine
-		if _, err := result.MultiExp(points, coefficients, ecc.MultiExpConfig{NbTasks: cvCryptoWorkers(len(points))}); err == nil {
+		// Inner MSM stays serial: every hot caller (leaf ownership batch,
+		// subgroup batch) already runs inside the leaf-verify worker pool, and
+		// gnark's task fan-out multiplies goroutines across those outer
+		// workers while its channel coordination caps real utilization.
+		if _, err := result.MultiExp(points, coefficients, ecc.MultiExpConfig{
+			NbTasks: cvNestedMSMWorkers(len(points)),
+		}); err == nil {
 			return result, nil
 		}
 	}

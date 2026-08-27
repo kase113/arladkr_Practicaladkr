@@ -20,7 +20,7 @@ func cvRunAgreementV2(
 		return nil, nil, 0, err
 	}
 	predicate := cvAggregatePredicateV2(public)
-	wire, err := cvAgreementObjectV2CanonicalBytes(candidate, public.Params, validatorSample)
+	wire, err := cvAgreementObjectV2WireBytes(candidate, public.Params, validatorSample)
 	if err != nil || !predicate(candidate.Header.ProposerID, wire) {
 		return nil, nil, 0, fmt.Errorf("invalid local CV V2 agreement candidate")
 	}
@@ -41,7 +41,7 @@ func cvRunAgreementV2(
 	if err != nil {
 		return nil, nil, peerWait, fmt.Errorf("CV V2 agreement returned an invalid object")
 	}
-	canonical, err := cvAgreementObjectV2CanonicalBytes(decided, public.Params, validatorSample)
+	canonical, err := cvAgreementObjectV2WireBytes(decided, public.Params, validatorSample)
 	if err != nil || !bytes.Equal(canonical, decidedWire) {
 		return nil, nil, peerWait, fmt.Errorf("CV V2 agreement returned a non-canonical object")
 	}

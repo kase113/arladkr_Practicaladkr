@@ -135,10 +135,16 @@ func RunCVEpochV2(ctx context.Context, cfg Config) (*EpochResult, error) {
 	if err != nil || len(proposers) == 0 {
 		return nil, fmt.Errorf("derive CV V2 eligibility samples: %w", err)
 	}
-	public := cvAgreementPublicContextV2{SID: c.SID, Epoch: uint64(c.Epoch), ContextDigest: contextDigest,
-		OldCommittee: c.OldCommittee, EligibilityCoin: eligibilityCoin, Params: runtime.params,
-		APDBSigner: runtime.apdbSigner, ControlSigner: runtime.controlSigner, CoinSigner: runtime.coinSigner,
-		ValidatorKeys: runtime.validators}
+	// The receiver actor shares this node but has a separate network service.
+	// Give it the already-verified coin so post-agreement cache pulls can
+	// deterministically spread requests across the same validator sample.
+	if err := receiverService.setEligibilityCoin(eligibilityCoin); err != nil {
+		return nil, fmt.Errorf("configure CV V2 receiver eligibility sample: %w", err)
+	}
+	public, err := oldService.agreementPublicContextV2()
+	if err != nil {
+		return nil, fmt.Errorf("build CV V2 agreement context: %w", err)
+	}
 	proposerSlotsStarted := time.Now()
 	candidate, err := cvRunSampledProposerSlotsV2(
 		ctx, proposers, oldService.certifiedCandidateChV2,
@@ -292,9 +298,22 @@ func RunCVEpochV2(ctx context.Context, cfg Config) (*EpochResult, error) {
 		CVProposerRejectedComponentCount:        experimentMetrics.proposerRejectedCount,
 		CVDealerHintBuildLatency:                experimentMetrics.dealerHintBuildLatency,
 		CVDealerResponseEncodeLatency:           experimentMetrics.dealerResponseEncodeLatency,
+		CVDealerPayloadSentBytes:                experimentMetrics.dealerPayloadSentBytes,
+		CVDealerHintSentBytes:                   experimentMetrics.dealerHintSentBytes,
+		CVHolderFragmentSentBytes:               experimentMetrics.holderFragmentSentBytes,
+		CVComponentRecoveryLateRecvBytes:        experimentMetrics.componentRecoveryLateRecvBytes,
+		CVComponentDirectPayloadHits:            experimentMetrics.componentDirectPayloadHits,
+		CVComponentFragmentRecoveries:           experimentMetrics.componentFragmentRecoveries,
+		CVComponentDirectGraceWait:              experimentMetrics.componentDirectGraceWait,
 		CVReceiverPayloadValidationLatency:      experimentMetrics.receiverPayloadDecodeLatency,
 		CVRecoveryQueueWaitLatency:              experimentMetrics.recoveryQueueWaitLatency,
 		CVRecoveryWorkerLatency:                 experimentMetrics.recoveryWorkerLatency,
+		CVAggregateRecoveryCacheHits:            experimentMetrics.aggregateRecoveryCacheHits,
+		CVAggregateRecoveryCacheMisses:          experimentMetrics.aggregateRecoveryCacheMisses,
+		CVComponentRecoveryCacheHits:            experimentMetrics.componentRecoveryCacheHits,
+		CVComponentRecoveryCacheMisses:          experimentMetrics.componentRecoveryCacheMisses,
+		CVAggregateRecoveryResponseLatency:      experimentMetrics.aggregateRecoveryResponseLatency,
+		CVAggregateRecoveryResponseRequests:     experimentMetrics.aggregateRecoveryResponseRequests,
 		CVValidatorComponentRecoverySentBytes:   experimentMetrics.validatorComponentRecoverySentBytes,
 		CVValidatorComponentRecoveryRecvBytes:   experimentMetrics.validatorComponentRecoveryRecvBytes,
 		CVValidatorComponentRecoveryLatency:     experimentMetrics.validatorComponentRecoveryLatency,
@@ -341,12 +360,17 @@ func cvAddCostBreakdownV2(sent, recv map[string]uint64, services ...cvServiceExp
 		return
 	}
 	tagGroups := map[string][]string{
-		"arc_share":          {cvTagAggregateARCShareV2},
-		"pool_coin":          {cvTagCoinShareV2, cvTagPoolOfferV2, cvTagPoolCertShareV2, cvTagPoolCertV2},
-		"validation_request": {cvTagValidationRequestV2, cvTagValidationSignatureV2, cvTagValidationResultV2},
-		"candidate_relay":    {cvTagCertifiedCandidateV2, cvTagCertifiedCandidateACKV2, cvTagCertifiedCandidateAnnounceV2, cvTagCertifiedCandidateFetchV2, cvTagCertifiedCandidateResponseV2},
-		"decision_handoff":   {cvTagDecisionShareV2, cvTagHandoffV2},
-		"new_share_exchange": {cvTagAggregateShareV2},
+		"component_recovery_data": {cvTagAPDBRecoverGetV2, cvTagAPDBRecoverPayloadV2, cvTagAPDBRecoverStoreV2},
+		"arc_share":               {cvTagAggregateARCShareV2},
+		"pool_coin":               {cvTagCoinShareV2, cvTagPoolOfferV2, cvTagPoolCertShareV2, cvTagPoolCertV2},
+		"validation_request":      {cvTagValidationRequestV2, cvTagValidationSignatureV2, cvTagValidationResultV2},
+		"candidate_relay":         {cvTagCertifiedCandidateV2, cvTagCertifiedCandidateACKV2, cvTagCertifiedCandidateACKProbeV2, cvTagCertifiedCandidateAnnounceV2, cvTagCertifiedCandidateFetchV2, cvTagCertifiedCandidateResponseV2},
+		"decision_handoff":        {cvTagDecisionShareV2, cvTagHandoffV2},
+		"new_share_exchange":      {cvTagAggregateShareV2},
+		// Recovery traffic excludes post-recovery key-share/PSHARE exchange.
+		// These tags cover only the aggregate APDB request and holder response.
+		"recovery_data": {cvTagAggregateRecoverGetV2, cvTagAggregateRecoverCancelV2, cvTagAggregateRecoverStoreV2,
+			cvTagAggregatePayloadGetV2, cvTagAggregatePayloadV2},
 	}
 	for _, metrics := range services {
 		sent["component_apdb_dispersal"] += metrics.componentDispersalSentBytes
@@ -355,10 +379,25 @@ func cvAddCostBreakdownV2(sent, recv map[string]uint64, services ...cvServiceExp
 		recv["aggregate_apdb_dispersal"] += metrics.aggregateDispersalRecvBytes
 		sent["new_aggregate_recovery"] += metrics.newAggregateRecoverySentBytes
 		recv["new_aggregate_recovery"] += metrics.newAggregateRecoveryRecvBytes
+		knownTags := make(map[string]struct{})
 		for name, tags := range tagGroups {
 			for _, tag := range tags {
+				knownTags[tag] = struct{}{}
 				sent[name] += metrics.tagSentBytes[tag]
 				recv[name] += metrics.tagRecvBytes[tag]
+			}
+		}
+		for _, tag := range []string{cvTagAPDBStoreV2, cvTagAPDBStoredShareV2, cvTagAggregateAPDBStoreV2, cvTagAggregateARCShareV2} {
+			knownTags[tag] = struct{}{}
+		}
+		for tag, bytes := range metrics.tagSentBytes {
+			if _, ok := knownTags[tag]; !ok {
+				sent["apdb_other"] += bytes
+			}
+		}
+		for tag, bytes := range metrics.tagRecvBytes {
+			if _, ok := knownTags[tag]; !ok {
+				recv["apdb_other"] += bytes
 			}
 		}
 	}

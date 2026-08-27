@@ -97,9 +97,20 @@ type runStat struct {
 	cvProposerRejectedCount               float64
 	cvDealerHintBuildMs                   float64
 	cvDealerResponseEncodeMs              float64
+	cvDealerPayloadSentBytes              float64
+	cvDealerHintSentBytes                 float64
+	cvHolderFragmentSentBytes             float64
+	cvComponentRecoveryLateRecvBytes      float64
+	cvComponentDirectPayloadHits          float64
+	cvComponentFragmentRecoveries         float64
+	cvComponentDirectGraceWaitMs          float64
 	cvReceiverPayloadValidationMs         float64
 	cvRecoveryQueueWaitMs                 float64
 	cvRecoveryWorkerMs                    float64
+	cvAggregateRecoveryCacheHits          float64
+	cvAggregateRecoveryCacheMisses        float64
+	cvAggregateRecoveryResponseMs         float64
+	cvAggregateRecoveryResponseRequests   float64
 	cvValidatorComponentRecoverySentBytes float64
 	cvValidatorComponentRecoveryRecvBytes float64
 	cvValidatorComponentRecoveryMs        float64
@@ -191,7 +202,7 @@ func main() {
 		precomputeRuntime        = flag.Bool("precompute-runtime", true, "prepare deterministic runtime/key material before protocol timing")
 		startAt                  = flag.Int64("start-at", 0, "unix timestamp to synchronise start across nodes (0 = start immediately)")
 		prepareOnly              = flag.Bool("prepare-only", false, "prepare deterministic runtime material and exit")
-		ablationMode             = flag.String("ablation-mode", "none", "security ablation mode: none|no-agclock")
+		ablationMode             = flag.String("ablation-mode", "none", "reserved result field; CV V2 only accepts none")
 		commMetrics              = flag.Bool("comm-metrics", true, "enable protocol-layer communication byte counters")
 		strictNetwork            = flag.Bool("strict-network", envBoolDefault("RLADKR_STRICT_NETWORK", true), "fail if benchmark config selects local/cache protocol shortcuts")
 		cvPublicKeyDir           = flag.String("cv-public-key-dir", os.Getenv("RLADKR_CV_PUBLIC_KEY_DIR"), "CV public receiver registry directory")
@@ -485,90 +496,107 @@ func main() {
 				break
 			}
 			stats = append(stats, runStat{
-				latencyMs:                             epochLatencyMs,
-				setupMs:                               setupMs + float64(res.SetupLatency.Microseconds())/1000.0,
-				completedNodes:                        completed,
-				decidedSetMean:                        float64(len(res.LockedSet)),
-				aggRLOReadyMs:                         float64(res.AggRLOReadyLatency.Microseconds()) / 1000.0,
-				admitAggAttempts:                      float64(res.AdmitAggAttempts),
-				admitAggPasses:                        float64(res.AdmitAggPasses),
-				recoverAggSuccess:                     boolToFloat(res.RecoverAggSuccess),
-				disperseMs:                            float64(res.DisperseLatency.Microseconds()) / 1000.0,
-				disperseLocalBuildMs:                  float64(res.DisperseLocalBuildLatency.Microseconds()) / 1000.0,
-				disperseBroadcastMs:                   float64(res.DisperseBroadcastLatency.Microseconds()) / 1000.0,
-				disperseReadWaitMs:                    float64(res.DisperseReadWaitLatency.Microseconds()) / 1000.0,
-				disperseTrustedReadyMs:                float64(res.DisperseTrustedReadyLatency.Microseconds()) / 1000.0,
-				disperseAggregatePrewarmMs:            float64(res.DisperseAggregatePrewarmLatency.Microseconds()) / 1000.0,
-				lockAggMs:                             float64(res.LockAggLatency.Microseconds()) / 1000.0,
-				lockAggReadyCandidatesMs:              float64(res.LockAggReadyCandidatesLatency.Microseconds()) / 1000.0,
-				lockAggBuildAggregateMs:               float64(res.LockAggBuildAggregateLatency.Microseconds()) / 1000.0,
-				lockAggARCSharePrepareMs:              float64(res.LockAggARCSharePrepareLatency.Microseconds()) / 1000.0,
-				lockAggARCShareAttachMs:               float64(res.LockAggARCShareAttachLatency.Microseconds()) / 1000.0,
-				lockAggCandidateCount:                 float64(res.LockAggCandidateCount),
-				lockAggARCShareSignedCnt:              float64(res.LockAggARCShareSignedCount),
-				lockAggShareSignMs:                    float64(res.LockAggShareSignLatency.Microseconds()) / 1000.0,
-				lockAggCertRecoverMs:                  float64(res.LockAggCertRecoverLatency.Microseconds()) / 1000.0,
-				lockAggLocalAdmitMs:                   float64(res.LockAggLocalAdmitLatency.Microseconds()) / 1000.0,
-				mvbaOnlyMs:                            float64(res.MVBAOnlyLatency.Microseconds()) / 1000.0,
-				mvbaPeerWaitMs:                        float64(res.MVBAPeerWaitLatency.Microseconds()) / 1000.0,
-				agreeAggMs:                            float64(res.AgreeAggLatency.Microseconds()) / 1000.0,
-				recoverBarrierWaitMs:                  float64(res.RecoverBarrierWaitLatency.Microseconds()) / 1000.0,
-				recoverServiceGraceMs:                 recoverServiceGraceMs,
-				recoverMs:                             float64(res.RecoverLatency.Microseconds()) / 1000.0,
-				recoverOnlyMs:                         float64(res.RecoverOnlyLatency.Microseconds()) / 1000.0,
-				recoverVerifyMs:                       float64(res.RecoverVerifyLatency.Microseconds()) / 1000.0,
-				recoverCollectMs:                      float64(res.RecoverCollectLatency.Microseconds()) / 1000.0,
-				recoverVerifyOnlyMs:                   float64(res.RecoverVerifyOnlyLatency.Microseconds()) / 1000.0,
-				recoverMaterializeMs:                  float64(res.RecoverMaterializeLatency.Microseconds()) / 1000.0,
-				deriveMs:                              float64(res.DeriveLatency.Microseconds()) / 1000.0,
-				phaseSentBytes:                        phaseBytesFloat(res.PhaseSentBytes),
-				phaseRecvBytes:                        phaseBytesFloat(res.PhaseRecvBytes),
-				totalSentBytes:                        float64(res.TotalSentBytes),
-				totalRecvBytes:                        float64(res.TotalRecvBytes),
-				consensusHash:                         resultDigest,
-				cvComponentCount:                      float64(res.CVComponentCount),
-				cvARCHolderCount:                      float64(res.CVARCHolderCount),
-				cvRecoveredShardCount:                 float64(res.CVRecoveredShardCount),
-				cvVerifiedReceiptCount:                float64(res.CVVerifiedReceiptCount),
-				cvLeafBuildMs:                         float64(res.CVLeafBuildLatency.Microseconds()) / 1000.0,
-				cvComponentDisperseMs:                 float64(res.CVComponentDisperseLatency.Microseconds()) / 1000.0,
-				cvComponentCollectionMs:               float64(res.CVComponentCollectionLatency.Microseconds()) / 1000.0,
-				cvEligibilityCoinMs:                   float64(res.CVEligibilityCoinLatency.Microseconds()) / 1000.0,
-				cvProposerSlotsMs:                     float64(res.CVProposerSlotsLatency.Microseconds()) / 1000.0,
-				cvCoinFanoutMs:                        float64(res.CVCoinFanoutLatency.Microseconds()) / 1000.0,
-				cvCandidateFanoutACKWaitMs:            float64(res.CVCandidateFanoutACKWaitLatency.Microseconds()) / 1000.0,
-				cvCandidateFanoutRetryWaitMs:          float64(res.CVCandidateFanoutRetryWaitLatency.Microseconds()) / 1000.0,
-				cvCandidateFanoutMaxPeerMs:            float64(res.CVCandidateFanoutMaxPeerLatency.Microseconds()) / 1000.0,
-				cvCandidateFanoutAttempts:             float64(res.CVCandidateFanoutAttempts),
-				cvCandidateFanoutRetries:              float64(res.CVCandidateFanoutRetries),
-				cvAggregateDisperseMs:                 float64(res.CVAggregateDisperseLatency.Microseconds()) / 1000.0,
-				cvAggregateAgreementMs:                float64(res.CVAggregateAgreementLatency.Microseconds()) / 1000.0,
-				cvAPVSSACKCount:                       float64(res.CVAPVSSACKCount),
-				cvAPVSSFallbackCount:                  float64(res.CVAPVSSFallbackCount),
-				cvAPVSSProofBytes:                     float64(res.CVAPVSSProofBytes),
-				cvAPVSSLeafWireBytes:                  float64(res.CVAPVSSLeafWireBytes),
-				cvCompletedCandidates:                 float64(res.CVCompletedCandidateCount),
-				cvPoolWireBytes:                       float64(res.CVPoolWireBytes),
-				cvValidationRequestBytes:              float64(res.CVValidationRequestWireBytes),
-				cvAgreementObjectBytes:                float64(res.CVAgreementObjectWireBytes),
-				cvAggregatePayloadBytes:               float64(res.CVAggregatePayloadBytes),
-				cvAggregateAPDBBytes:                  float64(res.CVAggregateAPDBShardBytes),
-				cvPoolCertificateBytes:                float64(res.CVPoolCertificateBytes),
-				cvValidationCertificateBytes:          float64(res.CVValidationCertificateBytes),
-				cvARCCertificateBytes:                 float64(res.CVARCCertificateBytes),
-				cvDecisionCertificateBytes:            float64(res.CVDecisionCertificateBytes),
-				cvHandoffWireBytes:                    float64(res.CVHandoffWireBytes),
-				cvProposerRecoverySentBytes:           float64(res.CVProposerRecoverySentBytes),
-				cvProposerRecoveryRecvBytes:           float64(res.CVProposerRecoveryRecvBytes),
-				cvProposerRecoveryMs:                  float64(res.CVProposerRecoveryLatency.Microseconds()) / 1000.0,
-				cvProposerCatalogVerificationMs:       float64(res.CVProposerCatalogVerificationLatency.Microseconds()) / 1000.0,
-				cvProposerCatalogScanCount:            float64(res.CVProposerCatalogScanCount),
-				cvProposerRejectedCount:               float64(res.CVProposerRejectedComponentCount),
-				cvDealerHintBuildMs:                   float64(res.CVDealerHintBuildLatency.Microseconds()) / 1000.0,
-				cvDealerResponseEncodeMs:              float64(res.CVDealerResponseEncodeLatency.Microseconds()) / 1000.0,
-				cvReceiverPayloadValidationMs:         float64(res.CVReceiverPayloadValidationLatency.Microseconds()) / 1000.0,
-				cvRecoveryQueueWaitMs:                 float64(res.CVRecoveryQueueWaitLatency.Microseconds()) / 1000.0,
-				cvRecoveryWorkerMs:                    float64(res.CVRecoveryWorkerLatency.Microseconds()) / 1000.0,
+				latencyMs:                        epochLatencyMs,
+				setupMs:                          setupMs + float64(res.SetupLatency.Microseconds())/1000.0,
+				completedNodes:                   completed,
+				decidedSetMean:                   float64(len(res.LockedSet)),
+				aggRLOReadyMs:                    float64(res.AggRLOReadyLatency.Microseconds()) / 1000.0,
+				admitAggAttempts:                 float64(res.AdmitAggAttempts),
+				admitAggPasses:                   float64(res.AdmitAggPasses),
+				recoverAggSuccess:                boolToFloat(res.RecoverAggSuccess),
+				disperseMs:                       float64(res.DisperseLatency.Microseconds()) / 1000.0,
+				disperseLocalBuildMs:             float64(res.DisperseLocalBuildLatency.Microseconds()) / 1000.0,
+				disperseBroadcastMs:              float64(res.DisperseBroadcastLatency.Microseconds()) / 1000.0,
+				disperseReadWaitMs:               float64(res.DisperseReadWaitLatency.Microseconds()) / 1000.0,
+				disperseTrustedReadyMs:           float64(res.DisperseTrustedReadyLatency.Microseconds()) / 1000.0,
+				disperseAggregatePrewarmMs:       float64(res.DisperseAggregatePrewarmLatency.Microseconds()) / 1000.0,
+				lockAggMs:                        float64(res.LockAggLatency.Microseconds()) / 1000.0,
+				lockAggReadyCandidatesMs:         float64(res.LockAggReadyCandidatesLatency.Microseconds()) / 1000.0,
+				lockAggBuildAggregateMs:          float64(res.LockAggBuildAggregateLatency.Microseconds()) / 1000.0,
+				lockAggARCSharePrepareMs:         float64(res.LockAggARCSharePrepareLatency.Microseconds()) / 1000.0,
+				lockAggARCShareAttachMs:          float64(res.LockAggARCShareAttachLatency.Microseconds()) / 1000.0,
+				lockAggCandidateCount:            float64(res.LockAggCandidateCount),
+				lockAggARCShareSignedCnt:         float64(res.LockAggARCShareSignedCount),
+				lockAggShareSignMs:               float64(res.LockAggShareSignLatency.Microseconds()) / 1000.0,
+				lockAggCertRecoverMs:             float64(res.LockAggCertRecoverLatency.Microseconds()) / 1000.0,
+				lockAggLocalAdmitMs:              float64(res.LockAggLocalAdmitLatency.Microseconds()) / 1000.0,
+				mvbaOnlyMs:                       float64(res.MVBAOnlyLatency.Microseconds()) / 1000.0,
+				mvbaPeerWaitMs:                   float64(res.MVBAPeerWaitLatency.Microseconds()) / 1000.0,
+				agreeAggMs:                       float64(res.AgreeAggLatency.Microseconds()) / 1000.0,
+				recoverBarrierWaitMs:             float64(res.RecoverBarrierWaitLatency.Microseconds()) / 1000.0,
+				recoverServiceGraceMs:            recoverServiceGraceMs,
+				recoverMs:                        float64(res.RecoverLatency.Microseconds()) / 1000.0,
+				recoverOnlyMs:                    float64(res.RecoverOnlyLatency.Microseconds()) / 1000.0,
+				recoverVerifyMs:                  float64(res.RecoverVerifyLatency.Microseconds()) / 1000.0,
+				recoverCollectMs:                 float64(res.RecoverCollectLatency.Microseconds()) / 1000.0,
+				recoverVerifyOnlyMs:              float64(res.RecoverVerifyOnlyLatency.Microseconds()) / 1000.0,
+				recoverMaterializeMs:             float64(res.RecoverMaterializeLatency.Microseconds()) / 1000.0,
+				deriveMs:                         float64(res.DeriveLatency.Microseconds()) / 1000.0,
+				phaseSentBytes:                   phaseBytesFloat(res.PhaseSentBytes),
+				phaseRecvBytes:                   phaseBytesFloat(res.PhaseRecvBytes),
+				totalSentBytes:                   float64(res.TotalSentBytes),
+				totalRecvBytes:                   float64(res.TotalRecvBytes),
+				consensusHash:                    resultDigest,
+				cvComponentCount:                 float64(res.CVComponentCount),
+				cvARCHolderCount:                 float64(res.CVARCHolderCount),
+				cvRecoveredShardCount:            float64(res.CVRecoveredShardCount),
+				cvVerifiedReceiptCount:           float64(res.CVVerifiedReceiptCount),
+				cvLeafBuildMs:                    float64(res.CVLeafBuildLatency.Microseconds()) / 1000.0,
+				cvComponentDisperseMs:            float64(res.CVComponentDisperseLatency.Microseconds()) / 1000.0,
+				cvComponentCollectionMs:          float64(res.CVComponentCollectionLatency.Microseconds()) / 1000.0,
+				cvEligibilityCoinMs:              float64(res.CVEligibilityCoinLatency.Microseconds()) / 1000.0,
+				cvProposerSlotsMs:                float64(res.CVProposerSlotsLatency.Microseconds()) / 1000.0,
+				cvCoinFanoutMs:                   float64(res.CVCoinFanoutLatency.Microseconds()) / 1000.0,
+				cvCandidateFanoutACKWaitMs:       float64(res.CVCandidateFanoutACKWaitLatency.Microseconds()) / 1000.0,
+				cvCandidateFanoutRetryWaitMs:     float64(res.CVCandidateFanoutRetryWaitLatency.Microseconds()) / 1000.0,
+				cvCandidateFanoutMaxPeerMs:       float64(res.CVCandidateFanoutMaxPeerLatency.Microseconds()) / 1000.0,
+				cvCandidateFanoutAttempts:        float64(res.CVCandidateFanoutAttempts),
+				cvCandidateFanoutRetries:         float64(res.CVCandidateFanoutRetries),
+				cvAggregateDisperseMs:            float64(res.CVAggregateDisperseLatency.Microseconds()) / 1000.0,
+				cvAggregateAgreementMs:           float64(res.CVAggregateAgreementLatency.Microseconds()) / 1000.0,
+				cvAPVSSACKCount:                  float64(res.CVAPVSSACKCount),
+				cvAPVSSFallbackCount:             float64(res.CVAPVSSFallbackCount),
+				cvAPVSSProofBytes:                float64(res.CVAPVSSProofBytes),
+				cvAPVSSLeafWireBytes:             float64(res.CVAPVSSLeafWireBytes),
+				cvCompletedCandidates:            float64(res.CVCompletedCandidateCount),
+				cvPoolWireBytes:                  float64(res.CVPoolWireBytes),
+				cvValidationRequestBytes:         float64(res.CVValidationRequestWireBytes),
+				cvAgreementObjectBytes:           float64(res.CVAgreementObjectWireBytes),
+				cvAggregatePayloadBytes:          float64(res.CVAggregatePayloadBytes),
+				cvAggregateAPDBBytes:             float64(res.CVAggregateAPDBShardBytes),
+				cvPoolCertificateBytes:           float64(res.CVPoolCertificateBytes),
+				cvValidationCertificateBytes:     float64(res.CVValidationCertificateBytes),
+				cvARCCertificateBytes:            float64(res.CVARCCertificateBytes),
+				cvDecisionCertificateBytes:       float64(res.CVDecisionCertificateBytes),
+				cvHandoffWireBytes:               float64(res.CVHandoffWireBytes),
+				cvProposerRecoverySentBytes:      float64(res.CVProposerRecoverySentBytes),
+				cvProposerRecoveryRecvBytes:      float64(res.CVProposerRecoveryRecvBytes),
+				cvProposerRecoveryMs:             float64(res.CVProposerRecoveryLatency.Microseconds()) / 1000.0,
+				cvProposerCatalogVerificationMs:  float64(res.CVProposerCatalogVerificationLatency.Microseconds()) / 1000.0,
+				cvProposerCatalogScanCount:       float64(res.CVProposerCatalogScanCount),
+				cvProposerRejectedCount:          float64(res.CVProposerRejectedComponentCount),
+				cvDealerHintBuildMs:              float64(res.CVDealerHintBuildLatency.Microseconds()) / 1000.0,
+				cvDealerResponseEncodeMs:         float64(res.CVDealerResponseEncodeLatency.Microseconds()) / 1000.0,
+				cvDealerPayloadSentBytes:         float64(res.CVDealerPayloadSentBytes),
+				cvDealerHintSentBytes:            float64(res.CVDealerHintSentBytes),
+				cvHolderFragmentSentBytes:        float64(res.CVHolderFragmentSentBytes),
+				cvComponentRecoveryLateRecvBytes: float64(res.CVComponentRecoveryLateRecvBytes),
+				cvComponentDirectPayloadHits:     float64(res.CVComponentDirectPayloadHits),
+				cvComponentFragmentRecoveries:    float64(res.CVComponentFragmentRecoveries),
+				cvComponentDirectGraceWaitMs:     float64(res.CVComponentDirectGraceWait.Microseconds()) / 1000.0,
+				cvReceiverPayloadValidationMs:    float64(res.CVReceiverPayloadValidationLatency.Microseconds()) / 1000.0,
+				cvRecoveryQueueWaitMs:            float64(res.CVRecoveryQueueWaitLatency.Microseconds()) / 1000.0,
+				cvRecoveryWorkerMs:               float64(res.CVRecoveryWorkerLatency.Microseconds()) / 1000.0,
+				cvAggregateRecoveryCacheHits:     float64(res.CVAggregateRecoveryCacheHits),
+				cvAggregateRecoveryCacheMisses:   float64(res.CVAggregateRecoveryCacheMisses),
+				cvAggregateRecoveryResponseMs: func() float64 {
+					if res.CVAggregateRecoveryResponseRequests == 0 {
+						return 0
+					}
+					return float64(res.CVAggregateRecoveryResponseLatency.Microseconds()) /
+						(1000.0 * float64(res.CVAggregateRecoveryResponseRequests))
+				}(),
+				cvAggregateRecoveryResponseRequests:   float64(res.CVAggregateRecoveryResponseRequests),
 				cvValidatorComponentRecoverySentBytes: float64(res.CVValidatorComponentRecoverySentBytes),
 				cvValidatorComponentRecoveryRecvBytes: float64(res.CVValidatorComponentRecoveryRecvBytes),
 				cvValidatorComponentRecoveryMs:        float64(res.CVValidatorComponentRecoveryLatency.Microseconds()) / 1000.0,
@@ -1061,6 +1089,12 @@ func formatBenchResult(in benchResultInput) string {
 		hashSummary,
 	)
 	line += fmt.Sprintf(
+		" cv_proposer_slot_grace_ms=%d cv_validation_first_wave_extra=%d cv_validation_first_wave_grace_ms=%d",
+		core.CVSampledProposerSlotGrace(in.kappa).Milliseconds(),
+		core.CVValidationFirstWaveExtra(),
+		core.CVValidationFirstWaveGrace().Milliseconds(),
+	)
+	line += fmt.Sprintf(
 		" latency_reporting=service_grace_adjusted mean_raw_latency_ms=%.2f mean_raw_all_latency_ms=%.2f p50_raw_latency_ms=%.2f p95_raw_latency_ms=%.2f",
 		meanRawLatency, meanRawAllLatency, meanRawP50Latency, meanRawP95Latency,
 	)
@@ -1085,7 +1119,8 @@ func formatBenchResult(in benchResultInput) string {
 		in.cvSamplingUnionBound,
 	)
 	cvLine := line + fmt.Sprintf(
-		" mean_cv_component_count=%.0f mean_cv_arc_holder_count=%.0f mean_cv_recovered_shard_count=%.0f mean_cv_verified_receipt_count=%.0f leaf_build_ms=%.0f component_disperse_ms=%.0f candidate_formation_ms=%.0f eligibility_coin_ms=%.2f proposer_slots_ms=%.2f mean_coin_fanout_ms=%.2f mean_candidate_ack_wait_ms=%.2f mean_candidate_retry_wait_ms=%.2f mean_candidate_fanout_max_peer_ms=%.2f mean_candidate_fanout_attempts=%.0f mean_candidate_fanout_retries=%.0f aggregate_disperse_ms=%.0f aggregate_agreement_ms=%.0f mean_apvss_ack_count=%.2f mean_apvss_fallback_count=%.2f mean_apvss_proof_bytes=%.0f mean_apvss_leaf_wire_bytes=%.0f mean_completed_candidate_count=%.0f mean_pool_wire_bytes=%.0f mean_validation_request_wire_bytes=%.0f mean_agreement_object_wire_bytes=%.0f mean_aggregate_payload_bytes=%.0f mean_aggregate_apdb_encoded_bytes=%.0f mean_pool_certificate_bytes=%.0f mean_validation_certificate_bytes=%.0f mean_arc_certificate_bytes=%.0f mean_decision_certificate_bytes=%.0f mean_handoff_wire_bytes=%.0f mean_proposer_component_recovery_sent_bytes=%.0f mean_proposer_component_recovery_recv_bytes=%.0f mean_proposer_component_recovery_ms=%.2f mean_proposer_catalog_verify_ms=%.2f mean_proposer_catalog_scan_count=%.0f mean_proposer_rejected_component_count=%.0f mean_dealer_hint_build_ms=%.2f mean_dealer_response_encode_ms=%.2f mean_receiver_payload_validation_ms=%.2f mean_recovery_queue_wait_ms=%.2f mean_recovery_worker_ms=%.2f mean_validator_component_recovery_sent_bytes=%.0f mean_validator_component_recovery_recv_bytes=%.0f mean_validator_component_recovery_ms=%.2f mean_validator_aggregate_recovery_sent_bytes=%.0f mean_validator_aggregate_recovery_recv_bytes=%.0f mean_validator_aggregate_recovery_ms=%.2f mean_arc_formation_ms=%.3f mean_vcert_formation_ms=%.3f mean_vcert_canonical_ms=%.3f mean_vcert_network_wait_ms=%.3f mean_vcert_signature_verify_ms=%.3f mean_vcert_aggregate_verify_ms=%.3f mean_deccert_formation_ms=%.3f mean_scalar_bounded_dlog_ms=%.3f mean_blinding_group_decryption_ms=%.3f aggregate_gate_wait_ms=%.2f aggregate_leaf_load_ms=%.2f aggregate_build_ms=%.2f aggregate_rs_ms=%.2f aggregate_header_token_ms=%.2f aggregate_offer_send_ms=%.2f aggregate_arc_wait_ms=%.2f aggregate_certificate_ms=%.2f recover_shard_ms=%.0f receipt_ms=%.0f mean_component_disperse_sent_bytes=%.0f mean_component_disperse_recv_bytes=%.0f mean_candidate_formation_sent_bytes=%.0f mean_candidate_formation_recv_bytes=%.0f mean_candidate_phase_counter_sent_bytes=%.0f mean_candidate_phase_counter_recv_bytes=%.0f mean_aggregate_agreement_sent_bytes=%.0f mean_aggregate_agreement_recv_bytes=%.0f mean_recover_shard_sent_bytes=%.0f mean_recover_shard_recv_bytes=%.0f mean_receipt_sent_bytes=%.0f mean_receipt_recv_bytes=%.0f mean_mvba_pd_data_sent_bytes=%.0f mean_mvba_pd_data_recv_bytes=%.0f mean_mvba_rc_data_sent_bytes=%.0f mean_mvba_rc_data_recv_bytes=%.0f mean_mvba_certificate_sent_bytes=%.0f mean_mvba_certificate_recv_bytes=%.0f",
+		" cv_payload_hints=%t cv_component_recovery_schedule=%s cv_component_direct_grace_ms=%d mean_cv_component_count=%.0f mean_cv_arc_holder_count=%.0f mean_cv_recovered_shard_count=%.0f mean_cv_verified_receipt_count=%.0f leaf_build_ms=%.0f component_disperse_ms=%.0f candidate_formation_ms=%.0f eligibility_coin_ms=%.2f proposer_slots_ms=%.2f mean_coin_fanout_ms=%.2f mean_candidate_ack_wait_ms=%.2f mean_candidate_retry_wait_ms=%.2f mean_candidate_fanout_max_peer_ms=%.2f mean_candidate_fanout_attempts=%.0f mean_candidate_fanout_retries=%.0f aggregate_disperse_ms=%.0f aggregate_agreement_ms=%.0f mean_apvss_ack_count=%.2f mean_apvss_fallback_count=%.2f mean_apvss_proof_bytes=%.0f mean_apvss_leaf_wire_bytes=%.0f mean_completed_candidate_count=%.0f mean_pool_wire_bytes=%.0f mean_validation_request_wire_bytes=%.0f mean_agreement_object_wire_bytes=%.0f mean_aggregate_payload_bytes=%.0f mean_aggregate_apdb_encoded_bytes=%.0f mean_pool_certificate_bytes=%.0f mean_validation_certificate_bytes=%.0f mean_arc_certificate_bytes=%.0f mean_decision_certificate_bytes=%.0f mean_handoff_wire_bytes=%.0f mean_proposer_component_recovery_sent_bytes=%.0f mean_proposer_component_recovery_recv_bytes=%.0f mean_proposer_component_recovery_ms=%.2f mean_proposer_catalog_verify_ms=%.2f mean_proposer_catalog_scan_count=%.0f mean_proposer_rejected_component_count=%.0f mean_dealer_hint_build_ms=%.2f mean_dealer_response_encode_ms=%.2f mean_dealer_payload_sent_bytes=%.0f mean_dealer_hint_sent_bytes=%.0f mean_holder_fragment_sent_bytes=%.0f mean_component_recovery_late_recv_bytes=%.0f mean_component_direct_payload_hits=%.0f mean_component_fragment_recoveries=%.0f mean_receiver_payload_validation_ms=%.2f mean_recovery_queue_wait_ms=%.2f mean_recovery_worker_ms=%.2f mean_aggregate_recovery_cache_hits=%.0f mean_aggregate_recovery_cache_misses=%.0f mean_aggregate_recovery_response_ms=%.3f mean_aggregate_recovery_response_requests=%.0f mean_validator_component_recovery_sent_bytes=%.0f mean_validator_component_recovery_recv_bytes=%.0f mean_validator_component_recovery_ms=%.2f mean_validator_aggregate_recovery_sent_bytes=%.0f mean_validator_aggregate_recovery_recv_bytes=%.0f mean_validator_aggregate_recovery_ms=%.2f mean_arc_formation_ms=%.3f mean_vcert_formation_ms=%.3f mean_vcert_canonical_ms=%.3f mean_vcert_network_wait_ms=%.3f mean_vcert_signature_verify_ms=%.3f mean_vcert_aggregate_verify_ms=%.3f mean_deccert_formation_ms=%.3f mean_scalar_bounded_dlog_ms=%.3f mean_blinding_group_decryption_ms=%.3f aggregate_gate_wait_ms=%.2f aggregate_leaf_load_ms=%.2f aggregate_build_ms=%.2f aggregate_rs_ms=%.2f aggregate_header_token_ms=%.2f aggregate_offer_send_ms=%.2f aggregate_arc_wait_ms=%.2f aggregate_certificate_ms=%.2f recover_shard_ms=%.0f receipt_ms=%.0f mean_component_disperse_sent_bytes=%.0f mean_component_disperse_recv_bytes=%.0f mean_candidate_formation_sent_bytes=%.0f mean_candidate_formation_recv_bytes=%.0f mean_candidate_phase_counter_sent_bytes=%.0f mean_candidate_phase_counter_recv_bytes=%.0f mean_aggregate_agreement_sent_bytes=%.0f mean_aggregate_agreement_recv_bytes=%.0f mean_recover_shard_sent_bytes=%.0f mean_recover_shard_recv_bytes=%.0f mean_receipt_sent_bytes=%.0f mean_receipt_recv_bytes=%.0f mean_mvba_pd_data_sent_bytes=%.0f mean_mvba_pd_data_recv_bytes=%.0f mean_mvba_rc_data_sent_bytes=%.0f mean_mvba_rc_data_recv_bytes=%.0f mean_mvba_certificate_sent_bytes=%.0f mean_mvba_certificate_recv_bytes=%.0f",
+		core.CVPayloadHintsEnabled(), core.CVComponentRecoverySchedule(), core.CVComponentDirectGraceForCommittee(in.n).Milliseconds(),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvComponentCount }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvARCHolderCount }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvRecoveredShardCount }),
@@ -1126,9 +1161,19 @@ func formatBenchResult(in benchResultInput) string {
 		meanOf(in.stats, func(s runStat) float64 { return s.cvProposerRejectedCount }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvDealerHintBuildMs }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvDealerResponseEncodeMs }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvDealerPayloadSentBytes }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvDealerHintSentBytes }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvHolderFragmentSentBytes }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvComponentRecoveryLateRecvBytes }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvComponentDirectPayloadHits }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvComponentFragmentRecoveries }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvReceiverPayloadValidationMs }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvRecoveryQueueWaitMs }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvRecoveryWorkerMs }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvAggregateRecoveryCacheHits }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvAggregateRecoveryCacheMisses }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvAggregateRecoveryResponseMs }),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvAggregateRecoveryResponseRequests }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvValidatorComponentRecoverySentBytes }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvValidatorComponentRecoveryRecvBytes }),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvValidatorComponentRecoveryMs }),
@@ -1164,18 +1209,25 @@ func formatBenchResult(in benchResultInput) string {
 		meanPhaseBytes(in.stats, "mvba_rc_data", true), meanPhaseBytes(in.stats, "mvba_rc_data", false),
 		meanPhaseBytes(in.stats, "mvba_certificate", true), meanPhaseBytes(in.stats, "mvba_certificate", false),
 	)
+	cvLine += fmt.Sprintf(" cv_component_dealer_response=%s cv_component_payload_compression=%t mean_component_direct_grace_wait_ms=%.2f",
+		core.CVComponentDealerResponseMode(), core.CVComponentPayloadCompressionEnabled(),
+		meanOf(in.stats, func(s runStat) float64 { return s.cvComponentDirectGraceWaitMs }))
 	return cvLine + fmt.Sprintf(
-		" mean_component_apdb_dispersal_sent_bytes=%.0f mean_component_apdb_dispersal_recv_bytes=%.0f mean_arc_share_sent_bytes=%.0f mean_pool_coin_sent_bytes=%.0f mean_pool_coin_recv_bytes=%.0f mean_validation_request_sent_bytes=%.0f mean_validation_request_recv_bytes=%.0f mean_aggregate_apdb_dispersal_sent_bytes=%.0f mean_aggregate_apdb_dispersal_recv_bytes=%.0f mean_candidate_relay_sent_bytes=%.0f mean_candidate_relay_recv_bytes=%.0f mean_decision_handoff_sent_bytes=%.0f mean_decision_handoff_recv_bytes=%.0f mean_new_aggregate_recovery_sent_bytes=%.0f mean_new_aggregate_recovery_recv_bytes=%.0f mean_new_aggregate_recovery_ms=%.2f mean_new_share_exchange_sent_bytes=%.0f mean_new_share_exchange_recv_bytes=%.0f",
+		" mean_component_apdb_dispersal_sent_bytes=%.0f mean_component_apdb_dispersal_recv_bytes=%.0f mean_component_recovery_data_sent_bytes=%.0f mean_component_recovery_data_recv_bytes=%.0f mean_arc_share_sent_bytes=%.0f mean_pool_coin_sent_bytes=%.0f mean_pool_coin_recv_bytes=%.0f mean_validation_request_sent_bytes=%.0f mean_validation_request_recv_bytes=%.0f mean_aggregate_apdb_dispersal_sent_bytes=%.0f mean_aggregate_apdb_dispersal_recv_bytes=%.0f mean_candidate_relay_sent_bytes=%.0f mean_candidate_relay_recv_bytes=%.0f mean_decision_handoff_sent_bytes=%.0f mean_decision_handoff_recv_bytes=%.0f mean_recovery_data_sent_bytes=%.0f mean_recovery_data_recv_bytes=%.0f mean_new_aggregate_recovery_sent_bytes=%.0f mean_new_aggregate_recovery_recv_bytes=%.0f mean_new_aggregate_recovery_ms=%.2f mean_new_share_exchange_sent_bytes=%.0f mean_new_share_exchange_recv_bytes=%.0f mean_apdb_other_sent_bytes=%.0f mean_mvba_other_sent_bytes=%.0f mean_accounted_tag_sent_bytes=%.0f mean_unclassified_sent_bytes=%.0f",
 		meanPhaseBytes(in.stats, "component_apdb_dispersal", true), meanPhaseBytes(in.stats, "component_apdb_dispersal", false),
+		meanPhaseBytes(in.stats, "component_recovery_data", true), meanPhaseBytes(in.stats, "component_recovery_data", false),
 		meanPhaseBytes(in.stats, "arc_share", true),
 		meanPhaseBytes(in.stats, "pool_coin", true), meanPhaseBytes(in.stats, "pool_coin", false),
 		meanPhaseBytes(in.stats, "validation_request", true), meanPhaseBytes(in.stats, "validation_request", false),
 		meanPhaseBytes(in.stats, "aggregate_apdb_dispersal", true), meanPhaseBytes(in.stats, "aggregate_apdb_dispersal", false),
 		meanPhaseBytes(in.stats, "candidate_relay", true), meanPhaseBytes(in.stats, "candidate_relay", false),
 		meanPhaseBytes(in.stats, "decision_handoff", true), meanPhaseBytes(in.stats, "decision_handoff", false),
+		meanPhaseBytes(in.stats, "recovery_data", true), meanPhaseBytes(in.stats, "recovery_data", false),
 		meanPhaseBytes(in.stats, "new_aggregate_recovery", true), meanPhaseBytes(in.stats, "new_aggregate_recovery", false),
 		meanOf(in.stats, func(s runStat) float64 { return s.cvNewAggregateRecoveryMs }),
 		meanPhaseBytes(in.stats, "new_share_exchange", true), meanPhaseBytes(in.stats, "new_share_exchange", false),
+		meanPhaseBytes(in.stats, "apdb_other", true), meanPhaseBytes(in.stats, "mvba_other", true),
+		meanAccountedSentBytes(in.stats), meanUnclassifiedSentBytes(in.stats),
 	)
 }
 
@@ -1234,6 +1286,62 @@ func meanPhaseBytes(stats []runStat, name string, sent bool) float64 {
 	}
 	if count == 0 {
 		return 0
+	}
+	return sum / float64(count)
+}
+
+// These names are populated from disjoint transport tag groups or dedicated
+// MVBA phases. Broad commPhase windows such as candidate_phase_counter and
+// recover_shard are intentionally excluded because they can overlap.
+var mutuallyExclusiveSentByteGroups = []string{
+	"component_apdb_dispersal", "aggregate_apdb_dispersal", "arc_share", "pool_coin",
+	"validation_request", "candidate_relay", "decision_handoff", "new_share_exchange",
+	"component_recovery_data", "recovery_data",
+	"mvba_pd_data", "mvba_rc_data", "mvba_certificate", "mvba_other", "apdb_other",
+}
+
+func meanAccountedSentBytes(stats []runStat) float64 {
+	if len(stats) == 0 {
+		return 0
+	}
+	sum := 0.0
+	count := 0
+	for _, stat := range stats {
+		if stat.phaseSentBytes == nil {
+			continue
+		}
+		accounted := 0.0
+		for _, name := range mutuallyExclusiveSentByteGroups {
+			accounted += stat.phaseSentBytes[name]
+		}
+		sum += accounted
+		count++
+	}
+	if count == 0 {
+		return 0
+	}
+	return sum / float64(count)
+}
+
+func meanUnclassifiedSentBytes(stats []runStat) float64 {
+	if len(stats) == 0 {
+		return 0
+	}
+	sum := 0.0
+	count := 0
+	for _, stat := range stats {
+		accounted := 0.0
+		if stat.phaseSentBytes != nil {
+			for _, name := range mutuallyExclusiveSentByteGroups {
+				accounted += stat.phaseSentBytes[name]
+			}
+		}
+		residual := stat.totalSentBytes - accounted
+		if residual < 0 {
+			residual = 0
+		}
+		sum += residual
+		count++
 	}
 	return sum / float64(count)
 }

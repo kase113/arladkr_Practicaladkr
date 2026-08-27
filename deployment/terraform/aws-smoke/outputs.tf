@@ -27,18 +27,26 @@ output "public_ips" {
 }
 
 output "local_public_cidrs" {
-  value = [for instance in aws_instance.node : "${instance.public_ip}/32"]
+  value = [for instance in aws_instance.node : "${instance.public_ip}/32" if instance.public_ip != ""]
+}
+
+output "management_vpc_endpoint_ids" {
+  value = merge(
+    { for service, endpoint in aws_vpc_endpoint.management : service => endpoint.id },
+    length(aws_vpc_endpoint.s3) == 1 ? { s3 = aws_vpc_endpoint.s3[0].id } : {},
+  )
 }
 
 output "node_roster" {
   value = [
     for index, instance in aws_instance.node : {
-      node_slot   = index + var.node_slot_offset
-      instance_id = instance.id
-      private_ip  = instance.private_ip
-      public_ip   = instance.public_ip
-      region      = var.aws_region
-      az          = instance.availability_zone
+      node_slot        = index + var.node_slot_offset
+      instance_id      = instance.id
+      private_ip       = instance.private_ip
+      public_ip        = instance.public_ip
+      logical_node_ids = split(",", var.logical_node_ids_by_instance[index])
+      region           = var.aws_region
+      az               = instance.availability_zone
     }
   ]
 }

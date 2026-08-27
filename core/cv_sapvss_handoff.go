@@ -20,10 +20,14 @@ type cvHandoffV2 struct {
 	Header        cvAggregateHeaderV2
 	ARC           cvAPDBLockV2
 	DecCert       []byte
+	// canonicalWire is populated by the strict decoder and reused by the
+	// authorization path to avoid a second handoff encode.
+	canonicalWire []byte
 }
 
 type cvAggregateRecoveryRequestV2 struct {
-	Handoff cvHandoffV2
+	Handoff       cvHandoffV2
+	canonicalWire []byte
 }
 
 func cvHandoffUnsignedV2CanonicalBytes(contextDigest []byte, header *cvAggregateHeaderV2, arc *cvAPDBLockV2) ([]byte, error) {
@@ -65,6 +69,9 @@ func cvDecisionStatementV2(contextDigest []byte, header *cvAggregateHeaderV2, ar
 func cvHandoffV2CanonicalBytes(handoff *cvHandoffV2) ([]byte, error) {
 	if handoff == nil || len(handoff.DecCert) == 0 || len(handoff.DecCert) > cvMaxComponentSignatureBytes {
 		return nil, fmt.Errorf("invalid CV V2 handoff")
+	}
+	if len(handoff.canonicalWire) != 0 {
+		return handoff.canonicalWire, nil
 	}
 	unsigned, err := cvHandoffUnsignedV2CanonicalBytes(handoff.ContextDigest, &handoff.Header, &handoff.ARC)
 	if err != nil {
@@ -120,17 +127,24 @@ func cvDecodeHandoffV2(wire []byte) (*cvHandoffV2, error) {
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 handoff")
 	}
+	handoff.canonicalWire = canonical
 	return handoff, nil
 }
 
 func cvVerifyHandoffV2(handoff *cvHandoffV2, expectedContext []byte, apdbSigner, controlSigner *tblsThresholdSigner) error {
+	if _, err := cvHandoffV2CanonicalBytes(handoff); err != nil {
+		return err
+	}
+	return cvVerifyDecodedHandoffV2(handoff, expectedContext, apdbSigner, controlSigner)
+}
+
+func cvVerifyDecodedHandoffV2(
+	handoff *cvHandoffV2, expectedContext []byte, apdbSigner, controlSigner *tblsThresholdSigner,
+) error {
 	if handoff == nil || len(expectedContext) != 32 || !cvV2SignerHasRole(apdbSigner, cvV2RoleAPDB) ||
 		!cvV2SignerHasRole(controlSigner, cvV2RoleControl) ||
 		!bytes.Equal(handoff.ContextDigest, expectedContext) {
 		return fmt.Errorf("invalid CV V2 handoff verification input")
-	}
-	if _, err := cvHandoffV2CanonicalBytes(handoff); err != nil {
-		return err
 	}
 	if err := cvVerifyAPDBLockV2(&handoff.ARC, apdbSigner); err != nil {
 		return err
@@ -145,6 +159,9 @@ func cvVerifyHandoffV2(handoff *cvHandoffV2, expectedContext []byte, apdbSigner,
 func cvAggregateRecoveryRequestV2CanonicalBytes(request *cvAggregateRecoveryRequestV2) ([]byte, error) {
 	if request == nil {
 		return nil, fmt.Errorf("nil CV V2 aggregate recovery request")
+	}
+	if len(request.canonicalWire) != 0 {
+		return request.canonicalWire, nil
 	}
 	handoffWire, err := cvHandoffV2CanonicalBytes(&request.Handoff)
 	if err != nil {
@@ -175,6 +192,7 @@ func cvDecodeAggregateRecoveryRequestV2(wire []byte) (*cvAggregateRecoveryReques
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 aggregate recovery request")
 	}
+	request.canonicalWire = canonical
 	return request, nil
 }
 

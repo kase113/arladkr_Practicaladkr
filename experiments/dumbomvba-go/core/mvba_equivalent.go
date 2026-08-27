@@ -178,7 +178,7 @@ func (m *DumboMVBA) routeEquivalentMessages(
 				trySend(ctx, coinRecv, in)
 			case TagMVBAPDFinish:
 				trySend(ctx, pdFinishRecv, in)
-			case TagMVBARC:
+			case TagMVBARC, TagMVBARCPull:
 				trySend(ctx, rcRecv, in)
 			case TagMVBARCPrepare:
 				trySend(ctx, rcPrepareRecv, in)

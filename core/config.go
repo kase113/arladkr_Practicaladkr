@@ -91,8 +91,8 @@ type Config struct {
 	// deterministic dealer artifacts instead of rebuilding all dealers in
 	// every process.
 	ArtifactCacheDir string
-	// AblationMode injects protocol-level security ablations for experiments.
-	// Supported: "none", "no-agclock".
+	// AblationMode is retained in the result schema for compatibility. V2 only
+	// accepts "none"; legacy ablations did not affect the production V2 path.
 	AblationMode string
 	// CommMetrics enables protocol-layer communication byte counters.
 	CommMetrics bool
@@ -308,9 +308,9 @@ func ValidateConfig(cfg Config) error {
 		return errors.New("APVSS benchmark fallback count must be in [0,f_n]")
 	}
 	switch cfg.AblationMode {
-	case "", "none", "no-agclock":
+	case "", "none":
 	default:
-		return errors.New("invalid ablation mode")
+		return errors.New("unsupported CV V2 ablation mode")
 	}
 	if cfg.StrictNetwork {
 		if err := validateStrictNetworkConfig(cfg); err != nil {

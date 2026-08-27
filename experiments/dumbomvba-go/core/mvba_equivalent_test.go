@@ -1,10 +1,13 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/gob"
 	"errors"
 	"math/rand"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -15,10 +18,48 @@ type memNet struct {
 	peers []chan ReceivedMessage
 }
 
+type dropPDStoreNet struct {
+	id         int
+	peers      []chan ReceivedMessage
+	leader     int
+	dropTo     int
+	dropSet    map[int]bool
+	dropMu     sync.Mutex
+	dropped    bool
+	droppedSet map[int]bool
+	delay      time.Duration
+}
+
 type blockingSendNet struct {
 	blocked  int
 	release  chan struct{}
 	attempts chan int
+}
+
+type capturedSend struct {
+	to  int
+	msg ProtocolMessage
+}
+
+type rcPullTestNet struct {
+	id   int
+	recv chan ReceivedMessage
+	sent chan capturedSend
+}
+
+func (n *rcPullTestNet) Broadcast(msg ProtocolMessage) error {
+	return n.Send(n.id, msg)
+}
+
+func (n *rcPullTestNet) Send(to int, msg ProtocolMessage) error {
+	select {
+	case n.sent <- capturedSend{to: to, msg: msg}:
+	default:
+	}
+	if to == n.id {
+		n.recv <- ReceivedMessage{From: n.id, Msg: msg}
+	}
+	return nil
 }
 
 func (n *blockingSendNet) Broadcast(ProtocolMessage) error { return nil }
@@ -47,6 +88,164 @@ func TestBroadcastEquivalentBoundsBlockedPeer(t *testing.T) {
 	}
 	if got := len(net.attempts); got != peers {
 		t.Fatalf("send attempts=%d want %d", got, peers)
+	}
+}
+
+func TestRCResponsibilityFanoutSafetyFloorAndCoverage(t *testing.T) {
+	t.Setenv("PRACTICAL_MVBA_RC_RESPONSIBILITY_FANOUT", "1")
+	const n, f = 32, 10
+	fanout := rcResponsibilityFanout(n, f)
+	if fanout != n-f {
+		t.Fatalf("fanout=%d want safety floor %d", fanout, n-f)
+	}
+	coverage := make([]int, n)
+	for sender := 0; sender < n; sender++ {
+		seen := make(map[int]struct{}, fanout)
+		for _, recipient := range rcResponsibilityRecipients(sender, n, fanout) {
+			if _, duplicate := seen[recipient]; duplicate {
+				t.Fatalf("sender %d has duplicate recipient %d", sender, recipient)
+			}
+			seen[recipient] = struct{}{}
+			coverage[recipient]++
+		}
+	}
+	for recipient, got := range coverage {
+		if got != n-f {
+			t.Fatalf("recipient %d coverage=%d want %d", recipient, got, n-f)
+		}
+		if got-f < n-2*f {
+			t.Fatalf("recipient %d honest coverage=%d below recovery threshold %d", recipient, got-f, n-2*f)
+		}
+	}
+}
+
+func TestRCResponsibilityFanoutDefaultsToFullCommittee(t *testing.T) {
+	t.Setenv("PRACTICAL_MVBA_RC_RESPONSIBILITY_FANOUT", "")
+	if got := rcResponsibilityFanout(32, 10); got != 32 {
+		t.Fatalf("default fanout=%d want 32", got)
+	}
+	t.Setenv("PRACTICAL_MVBA_RC_RESPONSIBILITY_FANOUT", "32")
+	if got := rcResponsibilityFanout(32, 10); got != 32 {
+		t.Fatalf("explicit full fanout=%d want 32", got)
+	}
+}
+
+func TestPDResponsibilityFanoutKeepsSafeFloorAndExplicitOptIn(t *testing.T) {
+	t.Setenv("PRACTICAL_MVBA_PD_RESPONSIBILITY_FANOUT", "")
+	if got := pdResponsibilityFanout(32, 10); got != 22 {
+		t.Fatalf("default PD fanout=%d want n-f=22", got)
+	}
+	t.Setenv("PRACTICAL_MVBA_PD_RESPONSIBILITY_FANOUT", "1")
+	if got := pdResponsibilityFanout(32, 10); got != 22 {
+		t.Fatalf("low explicit PD fanout=%d want safety floor 22", got)
+	}
+	t.Setenv("PRACTICAL_MVBA_PD_RESPONSIBILITY_FANOUT", "32")
+	if got := pdResponsibilityFanout(32, 10); got != 32 {
+		t.Fatalf("explicit full PD fanout=%d want 32", got)
+	}
+	if got := pdResponsibilityRecipients(5, 8, 3); !reflect.DeepEqual(got, []int{5, 6, 7}) {
+		t.Fatalf("PD recipients=%v", got)
+	}
+}
+
+func TestStoreMessagesCompactGobRoundTrip(t *testing.T) {
+	branch := merkleBranch{Index: 3, Siblings: [][]byte{bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)}}
+	pd := pdStoreMsg{SID: "compact", Root: bytes.Repeat([]byte{3}, 32), Stripe: bytes.Repeat([]byte{4}, 256), Branch: branch}
+	rc := rcStoreMsg{SID: "compact", Root: pd.Root, From: 3, Stripe: pd.Stripe, Branch: branch}
+	for _, input := range []ProtocolMessage{{Tag: TagMVBAPD, Body: pd}, {Tag: TagMVBARC, Body: rc}} {
+		var buf bytes.Buffer
+		if err := gob.NewEncoder(&buf).Encode(input); err != nil {
+			t.Fatal(err)
+		}
+		var output ProtocolMessage
+		if err := gob.NewDecoder(bytes.NewReader(buf.Bytes())).Decode(&output); err != nil {
+			t.Fatal(err)
+		}
+		if output.Tag != input.Tag {
+			t.Fatalf("tag=%q want %q", output.Tag, input.Tag)
+		}
+	}
+}
+
+func TestRCAuthenticatedPullRecoversMissingStripe(t *testing.T) {
+	const n, f, leader = 4, 1, 2
+	t.Setenv("PRACTICAL_MVBA_RC_RESPONSIBILITY_FANOUT", "3")
+	t.Setenv("PRACTICAL_MVBA_RC_PULL_DELAY_MS", "20")
+
+	bundle, err := GenerateTBLSKeyBundle(n, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signers := make([]*TBLSSigner, n)
+	for id := range signers {
+		signers[id], err = NewTBLSSigner(id, bundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	value := []byte("authenticated-pull-recovers-the-original-value")
+	stripes, err := erasureEncodeValue(value, n-2*f, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	root, branches := buildMerkle(stripes)
+	sid := "rc-pull-PD2"
+	digest := pdCertificateDigest("PD_STORED", sid, leader, root)
+	shares := make(map[int][]byte, n-f)
+	for id := 0; id < n-f; id++ {
+		shares[id], err = signers[id].Sign("PD_STORED", digest)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	certificate, err := recoverThresholdCertificate(signers[0], "PD_STORED", digest, shares, n-f)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	recv := make(chan ReceivedMessage, 128)
+	net := &rcPullTestNet{id: 0, recv: recv, sent: make(chan capturedSend, 128)}
+	m := &DumboMVBA{cfg: Config{ID: 0, N: n, F: f, RouteSendTimeout: 20 * time.Millisecond}, net: net, signer: signers[0]}
+	store0 := &rcStoreMsg{SID: sid, Root: root, From: 0, Stripe: stripes[0], Branch: branches[0]}
+	lock := &pdLockMsg{SID: sid, Leader: leader, Root: root, Certificate: certificate}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	type result struct {
+		value []byte
+		err   error
+	}
+	resultCh := make(chan result, 1)
+	go func() {
+		got, runErr := m.runRCSubprotocol(ctx, sid, recv, store0, lock)
+		resultCh <- result{value: got, err: runErr}
+	}()
+
+	pullSeen := false
+	deadline := time.After(time.Second)
+	for !pullSeen {
+		select {
+		case sent := <-net.sent:
+			if sent.msg.Tag == TagMVBARCPull {
+				pullSeen = true
+			}
+		case <-deadline:
+			t.Fatal("RC pull request was not emitted after missing recovery threshold")
+		}
+	}
+	recv <- ReceivedMessage{From: 1, Msg: ProtocolMessage{Tag: TagMVBARC, Body: rcStoreMsg{
+		SID: sid, Root: root, From: 1, Stripe: stripes[1], Branch: branches[1],
+	}}}
+	select {
+	case got := <-resultCh:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		if string(got.value) != string(value) {
+			t.Fatalf("recovered value=%q want %q", got.value, value)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RC did not retry decoding after authenticated pull response")
 	}
 }
 
@@ -83,6 +282,45 @@ func (n *memNet) Broadcast(msg ProtocolMessage) error {
 }
 
 func (n *memNet) Send(to int, msg ProtocolMessage) error {
+	rm := ReceivedMessage{From: n.id, Msg: msg}
+	select {
+	case n.peers[to] <- rm:
+	default:
+		select {
+		case n.peers[to] <- rm:
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return nil
+}
+
+func (n *dropPDStoreNet) Broadcast(msg ProtocolMessage) error {
+	for i := range n.peers {
+		_ = n.Send(i, msg)
+	}
+	return nil
+}
+
+func (n *dropPDStoreNet) Send(to int, msg ProtocolMessage) error {
+	shouldDrop := to == n.dropTo || n.dropSet[to]
+	if n.id == n.leader && shouldDrop && msg.Tag == TagMVBAPD {
+		if _, ok := msg.Body.(pdStoreMsg); ok {
+			if n.delay > 0 {
+				time.Sleep(n.delay)
+			}
+			n.dropMu.Lock()
+			if n.droppedSet == nil {
+				n.droppedSet = make(map[int]bool)
+			}
+			if !n.droppedSet[to] {
+				n.droppedSet[to] = true
+				n.dropped = true
+				n.dropMu.Unlock()
+				return nil
+			}
+			n.dropMu.Unlock()
+		}
+	}
 	rm := ReceivedMessage{From: n.id, Msg: msg}
 	select {
 	case n.peers[to] <- rm:
@@ -183,6 +421,168 @@ func TestDumboMVBA_EquivalentPath_AllNodesDecideSame(t *testing.T) {
 	for i := 0; i < n; i++ {
 		if len(outs[i].Payload) == 0 {
 			t.Fatalf("node %d returned empty payload", i)
+		}
+	}
+}
+
+func TestDumboMVBAEquivalentPDLeaderFallbackAfterDroppedStore(t *testing.T) {
+	const n, f = 4, 1
+	t.Setenv("PRACTICAL_MVBA_PD_RESPONSIBILITY_FANOUT", "3")
+	t.Setenv("PRACTICAL_MVBA_RC_RESPONSIBILITY_FANOUT", "4")
+	bundle, err := GenerateTBLSKeyBundle(n, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signers := make([]Signer, n)
+	for i := range signers {
+		signers[i], err = NewTBLSSigner(i, bundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sid := "pd-fallback-test"
+	order := leaderOrder(sid, n, 0)
+	leader := order[0]
+	dropTo := (leader + 1) % n
+	recv := make([]chan ReceivedMessage, n)
+	for i := range recv {
+		recv[i] = make(chan ReceivedMessage, 4096)
+	}
+	nodes := make([]*DumboMVBA, n)
+	for i := range nodes {
+		net := &dropPDStoreNet{id: i, peers: recv, leader: leader, dropTo: dropTo}
+		nodes[i], err = NewDumboMVBA(Config{
+			SID: sid, ID: i, N: n, F: f, MaxRounds: 4,
+			WaitSPBCTimeout: 5 * time.Second, RouteSendTimeout: 100 * time.Millisecond,
+			UseEquivalentPath: true, EquivalentCoinMode: "signature",
+		}, net, signers[i], nil, recv[i], nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	wg.Add(n)
+	for i := range nodes {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, errs[i] = nodes[i].Run(ctx, ProposalValue{Payload: []byte{byte(i + 1)}, Round: 0, Hint: "fallback"})
+		}()
+	}
+	wg.Wait()
+	for i, runErr := range errs {
+		if runErr != nil {
+			t.Fatalf("node %d failed after dropped initial PD store: %v", i, runErr)
+		}
+	}
+}
+
+func TestDumboMVBAEquivalentPDLeaderFallbackWithDelayedStore(t *testing.T) {
+	const n, f = 4, 1
+	t.Setenv("PRACTICAL_MVBA_PD_RESPONSIBILITY_FANOUT", "3")
+	t.Setenv("PRACTICAL_MVBA_RC_RESPONSIBILITY_FANOUT", "4")
+	bundle, err := GenerateTBLSKeyBundle(n, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signers := make([]Signer, n)
+	for i := range signers {
+		signers[i], err = NewTBLSSigner(i, bundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sid := "pd-delayed-fallback-test"
+	leader := leaderOrder(sid, n, 0)[0]
+	recv := make([]chan ReceivedMessage, n)
+	for i := range recv {
+		recv[i] = make(chan ReceivedMessage, 4096)
+	}
+	nodes := make([]*DumboMVBA, n)
+	for i := range nodes {
+		net := &dropPDStoreNet{id: i, peers: recv, leader: leader, dropTo: (leader + 1) % n, delay: 350 * time.Millisecond}
+		nodes[i], err = NewDumboMVBA(Config{
+			SID: sid, ID: i, N: n, F: f, MaxRounds: 4,
+			WaitSPBCTimeout: 5 * time.Second, RouteSendTimeout: 100 * time.Millisecond,
+			UseEquivalentPath: true, EquivalentCoinMode: "signature",
+		}, net, signers[i], nil, recv[i], nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	wg.Add(n)
+	for i := range nodes {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, errs[i] = nodes[i].Run(ctx, ProposalValue{Payload: []byte{byte(i + 11)}, Round: 0, Hint: "delayed-fallback"})
+		}()
+	}
+	wg.Wait()
+	for i, runErr := range errs {
+		if runErr != nil {
+			t.Fatalf("node %d failed after delayed PD store: %v", i, runErr)
+		}
+	}
+}
+
+func TestDumboMVBAEquivalentPDFallbackAfterFFailedResponsibilities(t *testing.T) {
+	const n, f = 7, 2
+	t.Setenv("PRACTICAL_MVBA_PD_RESPONSIBILITY_FANOUT", "5")
+	t.Setenv("PRACTICAL_MVBA_RC_RESPONSIBILITY_FANOUT", "7")
+	bundle, err := GenerateTBLSKeyBundle(n, f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signers := make([]Signer, n)
+	for i := range signers {
+		signers[i], err = NewTBLSSigner(i, bundle)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	sid := "pd-f-failures-test"
+	leader := leaderOrder(sid, n, 0)[0]
+	drops := map[int]bool{(leader + 1) % n: true, (leader + 2) % n: true}
+	recv := make([]chan ReceivedMessage, n)
+	for i := range recv {
+		recv[i] = make(chan ReceivedMessage, 8192)
+	}
+	nodes := make([]*DumboMVBA, n)
+	for i := range nodes {
+		net := &dropPDStoreNet{id: i, peers: recv, leader: leader, dropTo: -1, dropSet: drops}
+		nodes[i], err = NewDumboMVBA(Config{
+			SID: sid, ID: i, N: n, F: f, MaxRounds: 6,
+			WaitSPBCTimeout: 10 * time.Second, RouteSendTimeout: 100 * time.Millisecond,
+			UseEquivalentPath: true, EquivalentCoinMode: "signature",
+		}, net, signers[i], nil, recv[i], nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+	wg.Add(n)
+	for i := range nodes {
+		i := i
+		go func() {
+			defer wg.Done()
+			_, errs[i] = nodes[i].Run(ctx, ProposalValue{Payload: []byte{byte(i + 21)}, Round: 0, Hint: "f-fallback"})
+		}()
+	}
+	wg.Wait()
+	for i, runErr := range errs {
+		if runErr != nil {
+			t.Fatalf("node %d failed after f responsibility losses: %v", i, runErr)
 		}
 	}
 }

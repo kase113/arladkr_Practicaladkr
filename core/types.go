@@ -134,6 +134,24 @@ type EpochResult struct {
 	CVProposerCatalogVerificationLatency    time.Duration
 	CVProposerCatalogScanCount              int
 	CVProposerRejectedComponentCount        int
+	CVDealerHintBuildLatency                time.Duration
+	CVDealerResponseEncodeLatency           time.Duration
+	CVDealerPayloadSentBytes                uint64
+	CVDealerHintSentBytes                   uint64
+	CVHolderFragmentSentBytes               uint64
+	CVComponentRecoveryLateRecvBytes        uint64
+	CVComponentDirectPayloadHits            uint64
+	CVComponentFragmentRecoveries           uint64
+	CVComponentDirectGraceWait              time.Duration
+	CVReceiverPayloadValidationLatency      time.Duration
+	CVRecoveryQueueWaitLatency              time.Duration
+	CVRecoveryWorkerLatency                 time.Duration
+	CVAggregateRecoveryCacheHits            uint64
+	CVAggregateRecoveryCacheMisses          uint64
+	CVComponentRecoveryCacheHits            uint64
+	CVComponentRecoveryCacheMisses          uint64
+	CVAggregateRecoveryResponseLatency      time.Duration
+	CVAggregateRecoveryResponseRequests     uint64
 	CVValidatorComponentRecoverySentBytes   uint64
 	CVValidatorComponentRecoveryRecvBytes   uint64
 	CVValidatorComponentRecoveryLatency     time.Duration

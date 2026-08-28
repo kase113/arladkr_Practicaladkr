@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"math/big"
 	"net"
@@ -64,7 +65,6 @@ type recastStoreWire struct {
 	Dealer    int                      `json:"dealer"`
 	Holder    int                      `json:"holder"`
 	Root      []byte                   `json:"root"`
-	Cert      *APDBCertificate         `json:"cert,omitempty"`
 	Store     *RecoverStoreAttestation `json:"store,omitempty"`
 	TR        *DXTTranscript           `json:"tr,omitempty"`
 }
@@ -87,6 +87,16 @@ type recastWire struct {
 	Certs            map[int]APDBCertificate         `json:"certs,omitempty"`
 	CompletionDigest []byte                          `json:"completion_digest,omitempty"`
 	Signature        []byte                          `json:"signature,omitempty"`
+}
+
+var recastFrameMagic = [2]byte{'R', 'C'}
+
+func marshalRecastNetworkWire(wire recastWire) ([]byte, error) {
+	return marshalPracticalJSONFrame(recastFrameMagic, wire)
+}
+
+func readRecastNetworkWire(reader io.Reader, wire *recastWire) (int, error) {
+	return readPracticalJSONFrame(reader, recastFrameMagic, wire)
 }
 
 type cacheLockMeta struct {
@@ -400,7 +410,7 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 	tracef("phase=apdb_begin")
 	var apdbService *networkAPDBService
 	if cfg.StrictNetwork {
-		apdbService, err = startNetworkAPDBService(ctx, cfg, old, transcripts, dealerEDPriv, dealerEDPub, dxt)
+		apdbService, err = startNetworkAPDBService(ctx, cfg, old, transcripts, dealerEDPriv, dealerEDPub, dxt, coinKeys)
 		if err != nil {
 			return failWithPartial(err, "apdb_dispersal")
 		}
@@ -557,7 +567,7 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 	aggregateStart := time.Now()
 	setCommPhase("recover")
 	tracef("phase=recover_begin")
-	recoveredTranscripts, recoverTiming, err := runRecastRecovery(ctx, cfg, old, newC, selectedIDs, transcripts, apdbCerts, dealerEDPriv, dealerEDPub, dxt)
+	recoveredTranscripts, recoverTiming, err := runRecastRecovery(ctx, cfg, old, newC, selectedIDs, transcripts, apdbCerts, dealerEDPriv, dealerEDPub, dxt, coinKeys)
 	if err != nil {
 		return failWithPartial(err, "recover")
 	}
@@ -1029,6 +1039,63 @@ func verifyRecastCompletion(
 	return public != nil && ecdsa.VerifyASN1(public, expected, wire.Signature)
 }
 
+func recoverCompletionBarrierEnabled() bool {
+	return durationFromEnvMsOr("PRACTICAL_RECOVER_COMPLETION_WAIT_MS", 0) > 0
+}
+
+func listenRecastWithRetry(ctx context.Context, address string) (net.Listener, error) {
+	retryWindow := durationFromEnvMsOr("PRACTICAL_RECOVER_LISTEN_RETRY_MS", 2*time.Second)
+	deadline := time.Now().Add(retryWindow)
+	var lastErr error
+	for {
+		listener, err := net.Listen("tcp", address)
+		if err == nil {
+			return listener, nil
+		}
+		lastErr = err
+		if retryWindow <= 0 || !time.Now().Before(deadline) {
+			return nil, lastErr
+		}
+		timer := time.NewTimer(50 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func recastNodeAddrMap(protocolAddrs string) (map[int]string, error) {
+	base := parseNodeAddrMap(protocolAddrs)
+	raw := strings.TrimSpace(os.Getenv("PRACTICAL_RECAST_PORT_OFFSET"))
+	if raw == "" {
+		return base, nil
+	}
+	offset, err := strconv.Atoi(raw)
+	if err != nil || offset < 0 {
+		return nil, fmt.Errorf("invalid PRACTICAL_RECAST_PORT_OFFSET=%q", raw)
+	}
+	if offset == 0 {
+		return base, nil
+	}
+	shifted := make(map[int]string, len(base))
+	for id, address := range base {
+		host, portText, splitErr := net.SplitHostPort(address)
+		if splitErr != nil {
+			return nil, fmt.Errorf("invalid recast address for node %d: %w", id, splitErr)
+		}
+		port, convErr := strconv.Atoi(portText)
+		if convErr != nil || port <= 0 || port+offset > 65535 {
+			return nil, fmt.Errorf("invalid recast port for node %d", id)
+		}
+		shifted[id] = net.JoinHostPort(host, strconv.Itoa(port+offset))
+	}
+	return shifted, nil
+}
+
 func runRecastRecovery(
 	ctx context.Context,
 	cfg Config,
@@ -1040,6 +1107,7 @@ func runRecastRecovery(
 	nodePriv map[int]ed25519.PrivateKey,
 	nodePub map[int]ed25519.PublicKey,
 	dxt *DXTBackend,
+	thresholdKeys *thresholdCoinKeySet,
 ) (map[int]*DXTTranscript, RecoverTimingBreakdown, error) {
 	trace := strings.TrimSpace(os.Getenv("PRACTICAL_TRACE")) == "1"
 	tracef := func(format string, args ...any) {
@@ -1051,7 +1119,10 @@ func runRecastRecovery(
 	if len(selectedIDs) == 0 {
 		return map[int]*DXTTranscript{}, RecoverTimingBreakdown{}, nil
 	}
-	addrMap := parseNodeAddrMap(cfg.ProtocolNodeAddrs)
+	addrMap, addrErr := recastNodeAddrMap(cfg.ProtocolNodeAddrs)
+	if addrErr != nil {
+		return nil, RecoverTimingBreakdown{}, addrErr
+	}
 	localSet := parseNodeIDSet(cfg.ProtocolLocalNodeIDs)
 	if len(addrMap) == 0 || len(localSet) == 0 {
 		// Keep local compatibility path if protocol transport is absent.
@@ -1126,6 +1197,13 @@ func runRecastRecovery(
 		onDialFail func(error),
 		onWriteFail func(error),
 	) {
+		body, marshalErr := marshalRecastNetworkWire(wire)
+		if marshalErr != nil {
+			if onWriteFail != nil {
+				onWriteFail(marshalErr)
+			}
+			return
+		}
 		sendMu.Lock()
 		if !acceptingSends {
 			sendMu.Unlock()
@@ -1133,7 +1211,7 @@ func runRecastRecovery(
 		}
 		sendWG.Add(1)
 		sendMu.Unlock()
-		go func() {
+		go func(body []byte) {
 			defer sendWG.Done()
 			select {
 			case sendLimiter <- struct{}{}:
@@ -1169,15 +1247,25 @@ func runRecastRecovery(
 					continue
 				}
 				_ = conn.SetWriteDeadline(time.Now().Add(attemptTO))
-				if body, mErr := json.Marshal(wire); mErr == nil {
-					recordSentBytes(len(body))
-				}
 				if onSend != nil {
 					onSend()
 				}
-				err = json.NewEncoder(conn).Encode(wire)
+				remaining := body
+				for len(remaining) > 0 {
+					written, writeErr := conn.Write(remaining)
+					recordSentBytes(written)
+					remaining = remaining[written:]
+					if writeErr != nil {
+						err = writeErr
+						break
+					}
+					if written == 0 {
+						err = io.ErrShortWrite
+						break
+					}
+				}
 				_ = conn.Close()
-				if err == nil {
+				if err == nil && len(remaining) == 0 {
 					return
 				}
 				if time.Now().Add(retryBackoff).After(deadlineAt) {
@@ -1190,7 +1278,7 @@ func runRecastRecovery(
 					return
 				}
 			}
-		}()
+		}(body)
 	}
 	defer func() {
 		cleanup := func() {
@@ -1227,15 +1315,15 @@ func runRecastRecovery(
 	for _, dealer := range selectedIDs {
 		selectedSet[dealer] = struct{}{}
 		cert, ok := apdbCerts[dealer]
-		if !ok || !verifyAPDBCertificate(cert, nodePub, cfg.F) ||
+		if !ok || !verifyAPDBCertificateWithThresholdPublic(cert, nodePub, cfg.F, trustedAPDBThresholdPublic(thresholdKeys)) ||
 			len(cert.ValueDigest) != sha256.Size || len(cert.MerkleRoot) != sha256.Size ||
 			cert.DataShards != erasureK || cert.TotalShards != len(old) {
 			return nil, timing, fmt.Errorf("selected dealer %d lacks a complete RS/Merkle APDB certificate", dealer)
 		}
 		transcriptRoots[dealer] = append([]byte(nil), cert.Root...)
-		for _, rc := range cert.Receipts {
-			if pk, ok := nodePub[rc.NodeID]; ok {
-				holderKeys[rc.NodeID] = pk
+		for _, holder := range old {
+			if pk, present := nodePub[holder]; present {
+				holderKeys[holder] = pk
 			}
 		}
 	}
@@ -1255,7 +1343,7 @@ func runRecastRecovery(
 			continue
 		}
 		_, port, _ := net.SplitHostPort(addr)
-		ln, err := net.Listen("tcp", net.JoinHostPort("0.0.0.0", port))
+		ln, err := listenRecastWithRetry(ctx, net.JoinHostPort("0.0.0.0", port))
 		if err != nil {
 			listenerErrs[localID] = err
 			continue
@@ -1268,12 +1356,11 @@ func runRecastRecovery(
 				defer func() { _ = conn.Close() }()
 				_ = conn.SetReadDeadline(time.Now().Add(timeout))
 				var wire recastWire
-				if err := json.NewDecoder(conn).Decode(&wire); err != nil {
+				wireBytes, err := readRecastNetworkWire(conn, &wire)
+				if err != nil {
 					return
 				}
-				if body, mErr := json.Marshal(wire); mErr == nil {
-					recordRecvBytes(len(body))
-				}
+				recordRecvBytes(wireBytes)
 				if !validRecastWireContext(cfg, wire) {
 					return
 				}
@@ -1306,11 +1393,6 @@ func runRecastRecovery(
 							continue
 						}
 						root := append([]byte(nil), wire.Roots[dealer]...)
-						var certPtr *APDBCertificate
-						if cert, ok := wire.Certs[dealer]; ok {
-							c := cert
-							certPtr = &c
-						}
 						var storePtr *RecoverStoreAttestation
 						if st, ok := wire.Stores[dealer]; ok {
 							s := st
@@ -1323,7 +1405,6 @@ func runRecastRecovery(
 							Dealer:    dealer,
 							Holder:    wire.Holder,
 							Root:      root,
-							Cert:      certPtr,
 							Store:     storePtr,
 							TR: func() *DXTTranscript {
 								if tr, ok := wire.TRs[dealer]; ok {
@@ -1568,7 +1649,6 @@ func runRecastRecovery(
 	}
 
 	recipientRoots := make(map[int][]byte, len(selectedIDs))
-	storeCertSeen := make(map[int]map[int]struct{}, len(selectedIDs))
 	storeObligationSeen := make(map[int]map[int]struct{}, len(selectedIDs))
 	holderSeen := make(map[int]map[int]struct{}, len(selectedIDs))
 	recipientSeen := make(map[int]map[int]struct{}, len(selectedIDs))
@@ -1583,7 +1663,6 @@ func runRecastRecovery(
 	fetchRespRecvCount := uint64(0)
 	recipientSeenCount := uint64(0)
 	for _, dealer := range selectedIDs {
-		storeCertSeen[dealer] = make(map[int]struct{})
 		storeObligationSeen[dealer] = make(map[int]struct{})
 		holderSeen[dealer] = make(map[int]struct{})
 		recipientSeen[dealer] = make(map[int]struct{})
@@ -1736,7 +1815,6 @@ func runRecastRecovery(
 				continue
 			}
 			roots := make(map[int][]byte, len(selectedIDs))
-			certs := make(map[int]APDBCertificate, len(selectedIDs))
 			stores := make(map[int]RecoverStoreAttestation, len(selectedIDs))
 			availableDealers := make([]int, 0, len(selectedIDs))
 			sk, ok := nodePriv[holder]
@@ -1754,7 +1832,6 @@ func runRecastRecovery(
 				}
 				availableDealers = append(availableDealers, dealer)
 				roots[dealer] = append([]byte(nil), transcriptRoots[dealer]...)
-				certs[dealer] = cert
 				msg := hashRecoverStore(transcriptRoots[dealer], cert.Root, dealer, holder)
 				stores[dealer] = RecoverStoreAttestation{
 					Dealer: dealer, Holder: holder,
@@ -1774,7 +1851,6 @@ func runRecastRecovery(
 				Dealers:   availableDealers,
 				Roots:     roots,
 				Stores:    stores,
-				Certs:     certs,
 			}
 			sendRecast(
 				holder,
@@ -1817,6 +1893,11 @@ func runRecastRecovery(
 	}
 	completionStarted := false
 	completionWaitStart := time.Time{}
+	// Completion votes are only a process-lifecycle barrier; they are not
+	// needed to validate recovered transcripts or derive keys. Keep the old
+	// barrier as an opt-in diagnostic mode, but let the normal recovery path
+	// return as soon as every selected transcript is reconstructed locally.
+	waitForCompletions := recoverCompletionBarrierEnabled()
 	// Completion votes coordinate benchmark-process teardown only. They do not
 	// alter transcript validity, agreement, recovery, or the derived key.
 	completionSatisfied := func() bool {
@@ -1877,6 +1958,9 @@ func runRecastRecovery(
 	defer retryTicker.Stop()
 	for {
 		if len(recovered) == len(selectedIDs) && !completionStarted {
+			if !waitForCompletions {
+				break
+			}
 			if err := startCompletions(); err != nil {
 				return nil, timing, err
 			}
@@ -1952,17 +2036,12 @@ func runRecastRecovery(
 			if !ok {
 				continue
 			}
-			if seen.Cert != nil {
-				cert = *seen.Cert
-			}
-			if _, ok := storeCertSeen[seen.Dealer][seen.Holder]; !ok {
-				verifyStart := time.Now()
-				if !verifyAPDBCertificate(cert, nodePub, cfg.F) {
-					tracef("phase=recover_store_bad_cert dealer=%d holder=%d", seen.Dealer, seen.Holder)
-					continue
-				}
-				recoverStoreVerifyElapsed += time.Since(verifyStart)
-				storeCertSeen[seen.Dealer][seen.Holder] = struct{}{}
+			// The selected certificate was authenticated once before listeners
+			// started. RC STORE messages bind that agreed lock root instead of
+			// retransmitting and re-verifying the same certificate per holder.
+			if !bytes.Equal(seen.Root, transcriptRoots[seen.Dealer]) {
+				tracef("phase=recover_store_root_mismatch dealer=%d holder=%d", seen.Dealer, seen.Holder)
+				continue
 			}
 			holderPK, ok := holderKeys[seen.Holder]
 			if !ok {

@@ -210,6 +210,12 @@ func traceMVBATCP(format string, args ...any) {
 
 func (n *mvbaTCPNet) Broadcast(msg dmvba.ProtocolMessage) error {
 	traceMVBATCP("broadcast from=%d tag=%d round=%d leader=%d peers=%d", n.id, msg.Tag, msg.Round, msg.Leader, len(n.hub.recv))
+	// The wire is target-independent. Encode/gzip it once and reuse the
+	// immutable body for every peer; Send previously repeated this work n times.
+	body, err := marshalMVBATCPWire(mvbaTCPWire{From: n.id, Msg: msg})
+	if err != nil {
+		return err
+	}
 	var wg sync.WaitGroup
 	errCh := make(chan error, len(n.hub.recv))
 	for to := range n.hub.recv {
@@ -217,7 +223,7 @@ func (n *mvbaTCPNet) Broadcast(msg dmvba.ProtocolMessage) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := n.Send(to, msg); err != nil {
+			if err := n.send(to, msg, body); err != nil {
 				errCh <- err
 			}
 		}()
@@ -231,6 +237,10 @@ func (n *mvbaTCPNet) Broadcast(msg dmvba.ProtocolMessage) error {
 }
 
 func (n *mvbaTCPNet) Send(to int, msg dmvba.ProtocolMessage) error {
+	return n.send(to, msg, nil)
+}
+
+func (n *mvbaTCPNet) send(to int, msg dmvba.ProtocolMessage, preparedBody []byte) error {
 	sendStart := time.Now()
 	if n.hub == nil {
 		return fmt.Errorf("nil mvba tcp hub")
@@ -267,10 +277,14 @@ func (n *mvbaTCPNet) Send(to int, msg dmvba.ProtocolMessage) error {
 	}
 	poolKey := practicalMVBAPoolKey(addr, msg, n.hub.poolLanes)
 	traceMVBATCP("send_begin from=%d to=%d tag=%d round=%d leader=%d addr=%s", n.id, to, msg.Tag, msg.Round, msg.Leader, addr)
-	body, err := marshalMVBATCPWire(wire)
-	if err != nil {
-		n.hub.recordMVBANetSend(n.id, practicalMVBANetTag(msg), time.Since(sendStart), 0, false, false, 0, err)
-		return err
+	var err error
+	body := preparedBody
+	if body == nil {
+		body, err = marshalMVBATCPWire(wire)
+		if err != nil {
+			n.hub.recordMVBANetSend(n.id, practicalMVBANetTag(msg), time.Since(sendStart), 0, false, false, 0, err)
+			return err
+		}
 	}
 	frame := make([]byte, 4+len(body))
 	binary.BigEndian.PutUint32(frame[:4], uint32(len(body)))
@@ -1048,13 +1062,30 @@ func decideByDumboMVBA(
 
 	outs := make([]dmvba.ProposalValue, n)
 	errs := make([]error, n)
+	// SPBC/ACS can evaluate the same proposer payload repeatedly across rounds.
+	// APDB certificate verification is deterministic, so cache the predicate
+	// result by proposer and payload digest for this MVBA instance only.
+	var predicateMu sync.Mutex
+	predicateCache := make(map[string]bool, n*4)
 	required := apdbFinishedSetThreshold(cfg.F, n)
 	predicate := func(from int, value dmvba.ProposalValue) bool {
 		if from < 0 || from >= len(old) {
 			return false
 		}
-		_, err := validateMVBASetPayload(value.Payload, old[from], old, required, nodePub)
-		return err == nil
+		digest := sha256.Sum256(value.Payload)
+		cacheKey := fmt.Sprintf("%d:%x", from, digest[:])
+		predicateMu.Lock()
+		cached, ok := predicateCache[cacheKey]
+		predicateMu.Unlock()
+		if ok {
+			return cached
+		}
+		_, err := validateMVBASetPayload(value.Payload, old[from], old, required, nodePub, trustedAPDBThresholdPublic(thresholdKeys))
+		valid := err == nil
+		predicateMu.Lock()
+		predicateCache[cacheKey] = valid
+		predicateMu.Unlock()
+		return valid
 	}
 
 	hub, hubErr := newMVBATCPHub(mvbaCfg, recv)
@@ -1174,7 +1205,7 @@ func decideByDumboMVBA(
 		if len(outs[i].Payload) == 0 {
 			continue
 		}
-		p, err := validateMVBASetPayload(outs[i].Payload, -1, old, required, nodePub)
+		p, err := validateMVBASetPayload(outs[i].Payload, -1, old, required, nodePub, trustedAPDBThresholdPublic(thresholdKeys))
 		if err != nil {
 			return nil, breakdown, fmt.Errorf("decode mvba output at node %d: %w", old[i], err)
 		}
@@ -1262,6 +1293,7 @@ func validateMVBASetPayload(
 	old []int,
 	required int,
 	nodePub map[int]ed25519.PublicKey,
+	trustedThresholdPublic ...[]byte,
 ) (*mvbaSetPayload, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
@@ -1295,7 +1327,7 @@ func validateMVBASetPayload(
 			return nil, fmt.Errorf("MVBA dealer set is not strictly canonical")
 		}
 		cert := payload.Certificates[i]
-		if cert.Sender != dealer || len(cert.Receipts) != requiredReceipts {
+		if cert.Sender != dealer || (len(cert.Receipts) != 0 && len(cert.Receipts) != requiredReceipts) {
 			return nil, fmt.Errorf("MVBA APDB certificate does not match dealer %d", dealer)
 		}
 		for receiptIndex := range cert.Receipts {
@@ -1303,7 +1335,11 @@ func validateMVBASetPayload(
 				return nil, fmt.Errorf("MVBA APDB receipts are not strictly canonical")
 			}
 		}
-		if !verifyAPDBCertificate(cert, nodePub, f) {
+		var thresholdPublic []byte
+		if len(trustedThresholdPublic) == 1 {
+			thresholdPublic = trustedThresholdPublic[0]
+		}
+		if len(trustedThresholdPublic) > 1 || !verifyAPDBCertificateWithThresholdPublic(cert, nodePub, f, thresholdPublic) {
 			return nil, fmt.Errorf("MVBA APDB certificate for dealer %d is invalid", dealer)
 		}
 	}

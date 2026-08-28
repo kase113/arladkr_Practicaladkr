@@ -10,6 +10,14 @@ set -euo pipefail
 N="${PRACTICAL_MP_N:-7}"
 F="${PRACTICAL_MP_F:-2}"
 KAPPA="${PRACTICAL_MP_KAPPA:-3}"
+PORT_BASE="${PRACTICAL_MP_PORT_BASE:-23000}"
+MVBA_PORT_BASE="${PRACTICAL_MP_MVBA_PORT_BASE:-${PORT_BASE}}"
+PROTO_PORT_BASE="${PRACTICAL_MP_PROTO_PORT_BASE:-$((PORT_BASE + 1000))}"
+COIN_PORT_BASE="${PRACTICAL_MP_COIN_PORT_BASE:-$((PORT_BASE - 5000))}"
+if (( MVBA_PORT_BASE <= 0 || PROTO_PORT_BASE <= 0 || COIN_PORT_BASE <= 0 )); then
+  printf 'invalid port base configuration\n' >&2
+  exit 2
+fi
 if (( N <= 0 || F < 0 || KAPPA <= 0 || KAPPA > 2 * F + 1 || N < 3 * F + 1 )); then
   printf 'invalid committee parameters: n=%s f=%s kappa=%s\n' "${N}" "${F}" "${KAPPA}" >&2
   exit 2
@@ -22,6 +30,9 @@ SETUP_DIR="${RUN_DIR}/setup"
 LOG_DIR="${RUN_DIR}/logs"
 BIN="${ROOT_DIR}/bin/bench_latency"
 SUMMARY_AWK="${ROOT_DIR}/../../scripts/summarize_cluster_bench.awk"
+if [[ ! -f "${SUMMARY_AWK}" ]]; then
+  SUMMARY_AWK="$(cd "${ROOT_DIR}/../../../scripts" && pwd)/summarize_cluster_bench.awk"
+fi
 RESULTS_FILE="${RUN_DIR}/cluster-results.log"
 if [[ -d "${RUN_DIR}" && -n "$(find "${RUN_DIR}" -mindepth 1 -print -quit 2>/dev/null)" ]]; then
   printf 'run directory must be empty to avoid stale benchmark artifacts: %s\n' "${RUN_DIR}" >&2
@@ -60,15 +71,15 @@ proto_addrs=""
 coin_addrs=""
 for id in $(seq 0 $((N - 1))); do
   [[ -z "${mvba_addrs}" ]] || mvba_addrs+=","
-  mvba_addrs+="${id}=127.0.0.1:$((23000 + id))"
+  mvba_addrs+="${id}=127.0.0.1:$((MVBA_PORT_BASE + id))"
   [[ -z "${proto_addrs}" ]] || proto_addrs+=","
-	proto_addrs+="${id}=127.0.0.1:$((24000 + id))"
+	proto_addrs+="${id}=127.0.0.1:$((PROTO_PORT_BASE + id))"
 	[[ -z "${coin_addrs}" ]] || coin_addrs+=","
-	coin_addrs+="${id}=127.0.0.1:$((18000 + id))"
+	coin_addrs+="${id}=127.0.0.1:$((COIN_PORT_BASE + id))"
 done
 for id in $(seq 0 $((N - 1))); do
   new_id=$((N + id))
-  proto_addrs+=",${new_id}=127.0.0.1:$((24000 + new_id))"
+  proto_addrs+=",${new_id}=127.0.0.1:$((PROTO_PORT_BASE + new_id))"
 done
 
 # Hold every node at one wall-clock start so spawn skew does not compress the
@@ -76,6 +87,8 @@ done
 # the historical immediate start.
 PRACTICAL_START_AT_UNIX="${PRACTICAL_START_AT_UNIX:-$(( $(date +%s) + 8 ))}"
 export PRACTICAL_START_AT_UNIX
+PRACTICAL_RECAST_PORT_OFFSET="${PRACTICAL_RECAST_PORT_OFFSET:-3000}"
+export PRACTICAL_RECAST_PORT_OFFSET
 
 pids=()
 for id in $(seq 0 $((N - 1))); do

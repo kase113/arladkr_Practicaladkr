@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/rand"
@@ -126,6 +127,103 @@ func TestRecastCompletionBindsContextReceiverAndRoots(t *testing.T) {
 	}
 	if _, err := recastCompletionDigest(cfg, 10, []int{0, 0}, roots); err == nil {
 		t.Fatal("completion digest accepted duplicate dealers")
+	}
+}
+
+func TestRecoverCompletionBarrierIsOptIn(t *testing.T) {
+	t.Setenv("PRACTICAL_RECOVER_COMPLETION_WAIT_MS", "")
+	if recoverCompletionBarrierEnabled() {
+		t.Fatal("completion barrier enabled by default")
+	}
+	t.Setenv("PRACTICAL_RECOVER_COMPLETION_WAIT_MS", "0")
+	if recoverCompletionBarrierEnabled() {
+		t.Fatal("zero completion wait enabled the barrier")
+	}
+	t.Setenv("PRACTICAL_RECOVER_COMPLETION_WAIT_MS", "250")
+	if !recoverCompletionBarrierEnabled() {
+		t.Fatal("positive completion wait did not enable the compatibility barrier")
+	}
+}
+
+func TestListenRecastWithRetrySurvivesTransientPortUse(t *testing.T) {
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := occupied.Addr().String()
+	t.Setenv("PRACTICAL_RECOVER_LISTEN_RETRY_MS", "1000")
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		_ = occupied.Close()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	listener, err := listenRecastWithRetry(ctx, address)
+	if err != nil {
+		t.Fatalf("listen after transient port use: %v", err)
+	}
+	_ = listener.Close()
+}
+
+func TestRecastNodeAddrMapUsesOptionalPortNamespace(t *testing.T) {
+	t.Setenv("PRACTICAL_RECAST_PORT_OFFSET", "3000")
+	got, err := recastNodeAddrMap("7=127.0.0.1:41007,8=127.0.0.1:41008")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got[7] != "127.0.0.1:44007" || got[8] != "127.0.0.1:44008" {
+		t.Fatalf("recast addresses=%v", got)
+	}
+	t.Setenv("PRACTICAL_RECAST_PORT_OFFSET", "0")
+	got, err = recastNodeAddrMap("7=127.0.0.1:41007")
+	if err != nil || got[7] != "127.0.0.1:41007" {
+		t.Fatalf("zero offset addresses=%v err=%v", got, err)
+	}
+}
+
+func TestRecastFramedWireRoundTripAndLegacyCompatibility(t *testing.T) {
+	data := make([]byte, 64<<10)
+	for offset := 0; offset < len(data); offset += sha256.Size {
+		digest := sha256.Sum256([]byte{byte(offset), byte(offset >> 8), byte(offset >> 16)})
+		copy(data[offset:], digest[:])
+	}
+	want := recastWire{
+		Kind: "fetch_resp_batch", SID: "recast-frame", Epoch: 91, Holder: 2, Recipient: 10,
+		Dealers: []int{3},
+		Shards: map[int]RecoverShard{3: {
+			Dealer: 3, Index: 2, Root: bytes.Repeat([]byte{7}, sha256.Size),
+			DataShards: 3, TotalShards: 7, Data: data,
+		}},
+	}
+	legacy, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := marshalRecastNetworkWire(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frame) >= len(legacy) || len(frame) < 7 || frame[0] != recastFrameMagic[0] || frame[1] != recastFrameMagic[1] || frame[2] != 1 {
+		t.Fatalf("recast frame did not compress JSON bytes: frame=%d legacy=%d mode=%d", len(frame), len(legacy), frame[2])
+	}
+	var got recastWire
+	read, err := readRecastNetworkWire(bytes.NewReader(frame), &got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read != len(frame) || got.Kind != want.Kind || got.SID != want.SID || got.Epoch != want.Epoch ||
+		!bytes.Equal(got.Shards[3].Data, data) {
+		t.Fatalf("framed recast round trip mismatch: read=%d frame=%d", read, len(frame))
+	}
+
+	legacy = append(legacy, '\n')
+	got = recastWire{}
+	read, err = readRecastNetworkWire(bytes.NewReader(legacy), &got)
+	if err != nil || got.Kind != want.Kind || !bytes.Equal(got.Shards[3].Data, data) || read != len(legacy) {
+		t.Fatalf("legacy recast wire compatibility failed: read=%d want=%d err=%v", read, len(legacy), err)
+	}
+	if _, err := readRecastNetworkWire(bytes.NewReader(frame[:len(frame)-1]), &recastWire{}); err == nil {
+		t.Fatal("truncated recast frame was accepted")
 	}
 }
 

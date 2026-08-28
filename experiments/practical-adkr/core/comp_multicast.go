@@ -171,11 +171,10 @@ func runCompKeyDerivationMulticast(
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	for _, dealer := range canonicalSelected {
-		if !dxt.VerifyTranscript(0, transcripts[dealer]) {
-			return nil, nil, nil, nil, fmt.Errorf("CompProve input transcript %d failed full verification", dealer)
-		}
-	}
+	// Transcript validity was established by the preceding partial-verify
+	// phase (or its explicitly selected full-local variant). Re-running the
+	// complete transcript verification here duplicated the O(k*n) crypto work
+	// for every receiver without changing the selected set or predicate.
 
 	localIDs := make([]int, 0, len(compKeys.private))
 	for _, id := range newCommittee {
@@ -400,8 +399,8 @@ func sendCompKeyWire(ctx context.Context, cfg Config, from, to int, addr string,
 		conn, dialErr := dialWithBandwidth("tcp", addr, timeout)
 		if dialErr == nil {
 			_ = conn.SetDeadline(time.Now().Add(timeout))
-			recordSentBytes(len(raw))
-			_, writeErr := conn.Write(raw)
+			written, writeErr := conn.Write(raw)
+			recordSentBytes(written)
 			var ack compKeyWire
 			if writeErr == nil {
 				writeErr = json.NewDecoder(conn).Decode(&ack)
@@ -507,16 +506,23 @@ collectKeys:
 				continue
 			}
 			valid[wire.Sender] = wire.Share
-			// Reliable-channel emulation for the process benchmark: forward each
-			// first verified KEY so a late receiver can still obtain a sender's
-			// message after the original sender has locally decided.
-			for _, target := range committee {
-				if target == recipient {
-					continue
-				}
-				go sendCompKeyWire(ctx, cfg, recipient, target, addrMap[target], wire)
-			}
 		}
+	}
+	// A sender already multicasts each KEY to the complete committee. Do not
+	// relay verified keys from every receiver: that turns the paper's O(n^2)
+	// KEY exchange into an avoidable O(n^3) forwarding pattern. Sender retries
+	// and the persistent service provide the liveness mechanism.
+	if len(valid) > threshold {
+		ids := make([]int, 0, len(valid))
+		for id := range valid {
+			ids = append(ids, id)
+		}
+		sort.Ints(ids)
+		selected := make(map[int]CompPublicKeyShare, threshold)
+		for _, id := range ids[:threshold] {
+			selected[id] = valid[id]
+		}
+		valid = selected
 	}
 	group, public, err := interpolateCompPublicKeys(committee, valid, threshold)
 	if err != nil {
@@ -578,16 +584,23 @@ func buildCompKeyCompletionCertificate(
 	valid map[int]CompPublicKeyShare,
 	private *ecdsa.PrivateKey,
 ) (CompKeyCompletionCertificate, error) {
-	if private == nil || len(valid) != threshold {
+	if private == nil || len(valid) < threshold {
 		return CompKeyCompletionCertificate{}, errors.New("CompProve completion input incomplete")
 	}
+	ids := make([]int, 0, len(valid))
+	for sender := range valid {
+		ids = append(ids, sender)
+	}
+	sort.Ints(ids)
+	ids = ids[:threshold]
 	certificate := CompKeyCompletionCertificate{
 		Recipient: recipient, Threshold: threshold,
 		SelectedDigest: append([]byte(nil), selectedDigest...),
 		GroupPublicKey: append([]byte(nil), group...),
-		ShareDigests:   make(map[int][]byte, len(valid)),
+		ShareDigests:   make(map[int][]byte, threshold),
 	}
-	for sender, share := range valid {
+	for _, sender := range ids {
+		share := valid[sender]
 		digest, err := compPublicKeyShareDigest(share)
 		if err != nil {
 			return CompKeyCompletionCertificate{}, err

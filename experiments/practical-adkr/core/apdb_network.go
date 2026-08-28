@@ -36,25 +36,35 @@ type apdbNetworkWire struct {
 	Certificate APDBCertificate `json:"certificate,omitempty"`
 }
 
+var apdbFrameMagic = [2]byte{'A', 'P'}
+
 type apdbDealerResult struct {
 	certificate APDBCertificate
 	err         error
+}
+
+// verifiedAPDBCertificate is the only type admitted to the service's private
+// certificate channel. Network deliveries are verified by the listener and
+// locally produced certificates are verified before publication.
+type verifiedAPDBCertificate struct {
+	certificate APDBCertificate
 }
 
 // networkAPDBService stays alive from the end of DXT dealing through the MVBA
 // decision. This lets a node leave APDB after a finished quorum without making
 // its protocol port unavailable to slower certificate broadcasters.
 type networkAPDBService struct {
-	cfg          Config
-	old          []int
-	addresses    map[int]string
-	listeners    map[int]net.Listener
-	certificates chan APDBCertificate
-	ctx          context.Context
-	cancel       context.CancelFunc
-	closeOnce    sync.Once
-	listenerWG   sync.WaitGroup
-	sendWG       sync.WaitGroup
+	cfg           Config
+	old           []int
+	addresses     map[int]string
+	listeners     map[int]net.Listener
+	certificates  chan verifiedAPDBCertificate
+	ctx           context.Context
+	cancel        context.CancelFunc
+	closeOnce     sync.Once
+	listenerWG    sync.WaitGroup
+	sendWG        sync.WaitGroup
+	thresholdKeys *thresholdCoinKeySet
 }
 
 func startNetworkAPDBService(
@@ -65,14 +75,18 @@ func startNetworkAPDBService(
 	nodePriv map[int]ed25519.PrivateKey,
 	nodePub map[int]ed25519.PublicKey,
 	dxt *DXTBackend,
+	thresholdKeys ...*thresholdCoinKeySet,
 ) (*networkAPDBService, error) {
 	addresses := parseNodeAddrMap(cfg.ProtocolNodeAddrs)
 	configuredLocal := parseNodeIDSet(cfg.ProtocolLocalNodeIDs)
 	serviceCtx, cancel := context.WithCancel(ctx)
 	service := &networkAPDBService{
 		cfg: cfg, old: append([]int(nil), old...), addresses: addresses,
-		listeners: make(map[int]net.Listener), certificates: make(chan APDBCertificate, len(old)*len(old)*2),
+		listeners: make(map[int]net.Listener), certificates: make(chan verifiedAPDBCertificate, len(old)*len(old)*2),
 		ctx: serviceCtx, cancel: cancel,
+	}
+	if len(thresholdKeys) > 0 {
+		service.thresholdKeys = thresholdKeys[0]
 	}
 	for _, id := range old {
 		if _, ok := configuredLocal[id]; !ok {
@@ -94,7 +108,7 @@ func startNetworkAPDBService(
 		}
 		service.listeners[id] = listener
 		service.listenerWG.Add(1)
-		go serveNetworkAPDB(serviceCtx, cfg, old, id, listener, transcripts, nodePriv[id], nodePub, dxt, service.certificates, &service.listenerWG)
+		go serveNetworkAPDB(serviceCtx, cfg, old, id, listener, transcripts, nodePriv[id], nodePub, dxt, service.thresholdKeys, service.certificates, &service.listenerWG)
 	}
 	if len(service.listeners) == 0 {
 		service.close()
@@ -131,34 +145,35 @@ func (service *networkAPDBService) broadcast(certificate APDBCertificate) {
 }
 
 func writeAPDBNetworkWire(conn net.Conn, wire apdbNetworkWire) error {
-	payload, err := json.Marshal(wire)
+	frame, err := marshalPracticalJSONFrame(apdbFrameMagic, wire)
 	if err != nil {
 		return err
 	}
-	payload = append(payload, '\n')
-	wireBytes := len(payload)
-	for len(payload) > 0 {
-		n, err := conn.Write(payload)
+	return writeAPDBNetworkFrame(conn, frame)
+}
+
+func writeAPDBNetworkFrame(conn net.Conn, frame []byte) error {
+	wireBytes := len(frame)
+	for len(frame) > 0 {
+		n, err := conn.Write(frame)
 		if err != nil {
 			return err
 		}
 		if n <= 0 {
 			return errors.New("short APDB network write")
 		}
-		payload = payload[n:]
+		frame = frame[n:]
 	}
 	recordSentBytes(wireBytes)
 	return nil
 }
 
 func readAPDBNetworkWire(conn net.Conn, wire *apdbNetworkWire) error {
-	if err := json.NewDecoder(conn).Decode(wire); err != nil {
+	wireBytes, err := readPracticalJSONFrame(conn, apdbFrameMagic, wire)
+	if err != nil {
 		return err
 	}
-	payload, err := json.Marshal(wire)
-	if err == nil {
-		recordRecvBytes(len(payload) + 1)
-	}
+	recordRecvBytes(wireBytes)
 	return nil
 }
 
@@ -281,7 +296,7 @@ func runNetworkRSAPDB(
 	for _, dealer := range localOld {
 		dealer := dealer
 		go func() {
-			certificate, err := disperseNetworkAPDBDealer(ctx, cfg, old, dealer, transcripts[dealer], service.addresses, nodePub)
+			certificate, err := disperseNetworkAPDBDealer(ctx, cfg, old, dealer, transcripts[dealer], service.addresses, nodePub, service.thresholdKeys)
 			localCerts <- apdbDealerResult{certificate: certificate, err: err}
 		}()
 	}
@@ -295,8 +310,11 @@ func runNetworkRSAPDB(
 					continue
 				}
 				certificate := result.certificate
+				if !verifyAPDBCertificateWithThresholdPublic(certificate, nodePub, cfg.F, trustedAPDBThresholdPublic(service.thresholdKeys)) {
+					continue
+				}
 				select {
-				case service.certificates <- certificate:
+				case service.certificates <- verifiedAPDBCertificate{certificate: certificate}:
 					service.broadcast(certificate)
 				case <-ctx.Done():
 					return
@@ -311,10 +329,10 @@ func runNetworkRSAPDB(
 		select {
 		case <-ctx.Done():
 			return nil, fmt.Errorf("network APDB certificates: have=%d need=%d: %w", len(certs), required, ctx.Err())
-		case certificate := <-service.certificates:
+		case delivery := <-service.certificates:
+			certificate := delivery.certificate
 			_, dealerPresent := apdbNodeIndex(old, certificate.Sender)
-			if _, duplicate := certs[certificate.Sender]; duplicate || !dealerPresent ||
-				!verifyAPDBCertificate(certificate, nodePub, cfg.F) {
+			if _, duplicate := certs[certificate.Sender]; duplicate || !dealerPresent {
 				continue
 			}
 			certs[certificate.Sender] = certificate
@@ -342,7 +360,8 @@ func serveNetworkAPDB(
 	private ed25519.PrivateKey,
 	public map[int]ed25519.PublicKey,
 	dxt *DXTBackend,
-	certCh chan<- APDBCertificate,
+	thresholdKeys *thresholdCoinKeySet,
+	certCh chan<- verifiedAPDBCertificate,
 	wg *sync.WaitGroup,
 ) {
 	defer wg.Done()
@@ -368,13 +387,17 @@ func serveNetworkAPDB(
 				_ = writeAPDBNetworkWire(connection, apdbNetworkWire{Kind: "ready-ack", SID: cfg.SID, Epoch: cfg.Epoch, Holder: localID})
 			case "shard":
 				receipt, err := acceptNetworkAPDBShard(cfg, old, localID, wire, transcripts, private, dxt)
+				if err == nil && thresholdKeys != nil {
+					metadata := APDBCertificate{Sender: wire.Dealer, Root: wire.Root, ValueDigest: wire.ValueDigest, MerkleRoot: wire.MerkleRoot, DataShards: wire.DataShards, TotalShards: wire.TotalShards}
+					receipt.ThresholdShare, err = apdbThresholdShare(thresholdKeys, localID, metadata)
+				}
 				if err == nil {
 					_ = writeAPDBNetworkWire(connection, apdbNetworkWire{Kind: "receipt", SID: cfg.SID, Epoch: cfg.Epoch, Dealer: wire.Dealer, Holder: localID, Receipt: receipt})
 				}
 			case "cert":
-				if verifyAPDBCertificate(wire.Certificate, public, cfg.F) {
+				if verifyAPDBCertificateWithThresholdPublic(wire.Certificate, public, cfg.F, trustedAPDBThresholdPublic(thresholdKeys)) {
 					select {
-					case certCh <- wire.Certificate:
+					case certCh <- verifiedAPDBCertificate{certificate: wire.Certificate}:
 					case <-ctx.Done():
 						return
 					}
@@ -406,7 +429,7 @@ func acceptNetworkAPDBShard(cfg Config, old []int, localID int, wire apdbNetwork
 	return receipt, nil
 }
 
-func disperseNetworkAPDBDealer(ctx context.Context, cfg Config, old []int, dealer int, transcript *DXTTranscript, addrMap map[int]string, nodePub map[int]ed25519.PublicKey) (APDBCertificate, error) {
+func disperseNetworkAPDBDealer(ctx context.Context, cfg Config, old []int, dealer int, transcript *DXTTranscript, addrMap map[int]string, nodePub map[int]ed25519.PublicKey, thresholdKeys ...*thresholdCoinKeySet) (APDBCertificate, error) {
 	if transcript == nil {
 		return APDBCertificate{}, errors.New("nil network APDB transcript")
 	}
@@ -468,10 +491,21 @@ func disperseNetworkAPDBDealer(ctx context.Context, cfg Config, old []int, deale
 		}
 	}
 	sort.Slice(receipts, func(i, j int) bool { return receipts[i].NodeID < receipts[j].NodeID })
-	return APDBCertificate{
+	certificate := APDBCertificate{
 		Sender: dealer, Root: root, ValueDigest: valueDigest[:], MerkleRoot: merkleRoot,
 		DataShards: dataShards, TotalShards: len(old), Receipts: receipts,
-	}, nil
+	}
+	if len(thresholdKeys) > 0 && thresholdKeys[0] != nil {
+		certificate.ThresholdSignature, err = recoverAPDBThresholdSignature(thresholdKeys[0], certificate, receipts)
+		if err != nil {
+			return APDBCertificate{}, err
+		}
+		// The trusted group public key is setup material and is intentionally not
+		// repeated in every certificate wire. Keep receipt shares only in the
+		// local collection scope; MVBA carries just the constant-size proof.
+		certificate.Receipts = nil
+	}
+	return certificate, nil
 }
 
 func apdbNodeIndex(nodes []int, target int) (int, bool) {
@@ -484,11 +518,15 @@ func apdbNodeIndex(nodes []int, target int) (int, bool) {
 }
 
 func sendNetworkAPDBShard(ctx context.Context, cfg Config, from, to int, addr string, wire apdbNetworkWire) (APDBReceipt, error) {
+	frame, err := marshalPracticalJSONFrame(apdbFrameMagic, wire)
+	if err != nil {
+		return APDBReceipt{}, err
+	}
 	for {
 		conn, err := dialWithBandwidth("tcp", addr, 500*time.Millisecond)
 		if err == nil {
 			_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
-			if writeAPDBNetworkWire(conn, wire) == nil {
+			if writeAPDBNetworkFrame(conn, frame) == nil {
 				var response apdbNetworkWire
 				if readAPDBNetworkWire(conn, &response) == nil && response.Kind == "receipt" && response.Dealer == wire.Dealer && response.Holder == to {
 					_ = conn.Close()
@@ -507,11 +545,15 @@ func sendNetworkAPDBShard(ctx context.Context, cfg Config, from, to int, addr st
 
 func sendNetworkAPDBCertificate(ctx context.Context, cfg Config, from, to int, addr string, certificate APDBCertificate) {
 	wire := apdbNetworkWire{Kind: "cert", SID: cfg.SID, Epoch: cfg.Epoch, Dealer: certificate.Sender, Holder: to, Certificate: certificate}
+	frame, err := marshalPracticalJSONFrame(apdbFrameMagic, wire)
+	if err != nil {
+		return
+	}
 	for {
 		conn, err := dialWithBandwidth("tcp", addr, 500*time.Millisecond)
 		if err == nil {
 			_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
-			if writeAPDBNetworkWire(conn, wire) == nil {
+			if writeAPDBNetworkFrame(conn, frame) == nil {
 				var ack apdbNetworkWire
 				if readAPDBNetworkWire(conn, &ack) == nil && ack.Kind == "cert-ack" && ack.Dealer == certificate.Sender && ack.Holder == to {
 					_ = conn.Close()

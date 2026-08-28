@@ -8,9 +8,12 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"math/big"
+	"net"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestDXTShareChannelEncryptsAndAuthenticates(t *testing.T) {
@@ -87,7 +90,7 @@ func TestDXTLocalShareStoreIsReceiverScoped(t *testing.T) {
 	}
 }
 
-func TestPartialVerifyResultSignatureBindsDigestAndLanes(t *testing.T) {
+func TestPartialVerifyResultSignatureBindsDigestAndValidity(t *testing.T) {
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +99,7 @@ func TestPartialVerifyResultSignatureBindsDigestAndLanes(t *testing.T) {
 		Dealer:           3,
 		Verifier:         1,
 		TranscriptDigest: []byte("digest"),
-		Lanes:            map[int]bool{10: true, 11: false},
+		Valid:            true,
 	}
 	wire.Signature, err = ecdsa.SignASN1(rand.Reader, priv, partialVerifyResultMessage(&wire))
 	if err != nil {
@@ -105,9 +108,39 @@ func TestPartialVerifyResultSignatureBindsDigestAndLanes(t *testing.T) {
 	if !ecdsa.VerifyASN1(&priv.PublicKey, partialVerifyResultMessage(&wire), wire.Signature) {
 		t.Fatal("valid partial verification result signature rejected")
 	}
-	wire.Lanes[11] = true
+	wire.Valid = false
 	if ecdsa.VerifyASN1(&priv.PublicKey, partialVerifyResultMessage(&wire), wire.Signature) {
-		t.Fatal("lane mutation was accepted")
+		t.Fatal("validity-bit mutation was accepted")
+	}
+}
+
+func TestPartialVerifyBatchSignatureBindsCanonicalEntries(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := []partialVerifyBatchEntry{
+		{Dealer: 3, TranscriptDigest: []byte("digest-3"), Valid: true},
+		{Dealer: 7, TranscriptDigest: []byte("digest-7"), Valid: false},
+	}
+	message := partialVerifyBatchMessage(10, entries)
+	signature, err := ecdsa.SignASN1(rand.Reader, priv, message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ecdsa.VerifyASN1(&priv.PublicKey, message, signature) {
+		t.Fatal("valid batch signature rejected")
+	}
+	if bytes.Equal(partialVerifyBatchID(10, entries), partialVerifyBatchID(10, []partialVerifyBatchEntry{entries[1], entries[0]})) {
+		t.Fatal("batch ID ignored canonical entry order")
+	}
+	mutated := append([]partialVerifyBatchEntry(nil), entries...)
+	mutated[1].Valid = true
+	if ecdsa.VerifyASN1(&priv.PublicKey, partialVerifyBatchMessage(10, mutated), signature) {
+		t.Fatal("batch validity mutation was accepted")
+	}
+	if ecdsa.VerifyASN1(&priv.PublicKey, partialVerifyBatchMessage(11, entries), signature) {
+		t.Fatal("batch verifier mutation was accepted")
 	}
 }
 
@@ -127,6 +160,83 @@ func TestPartialVerifyNodeAddrMapUsesDedicatedNamespace(t *testing.T) {
 	}
 	if override[10] != "127.0.0.1:32000" {
 		t.Fatalf("dedicated partial address override=%v", override)
+	}
+}
+
+func TestPartialVerifyServiceDecodesResultBatch(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	out := make(chan partialVerifyResultWire, 2)
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go servePartialVerifyResults(ctx, listener, out, &wg)
+	defer func() {
+		cancel()
+		_ = listener.Close()
+		wg.Wait()
+	}()
+
+	wires := []partialVerifyResultWire{
+		{Dealer: 3, Verifier: 10, TranscriptDigest: []byte("dealer-3"), Valid: true},
+		{Dealer: 7, Verifier: 10, TranscriptDigest: []byte("dealer-7"), Valid: false},
+	}
+	batch := make([]byte, 0, 512)
+	for _, wire := range wires {
+		raw, marshalErr := json.Marshal(wire)
+		if marshalErr != nil {
+			t.Fatal(marshalErr)
+		}
+		batch = append(batch, raw...)
+		batch = append(batch, '\n')
+	}
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written, writeErr := conn.Write(batch); writeErr != nil || written != len(batch) {
+		_ = conn.Close()
+		t.Fatalf("write batch: bytes=%d/%d err=%v", written, len(batch), writeErr)
+	}
+	_ = conn.Close()
+
+	for i, want := range wires {
+		select {
+		case got := <-out:
+			if got.Dealer != want.Dealer || got.Verifier != want.Verifier || !bytes.Equal(got.TranscriptDigest, want.TranscriptDigest) {
+				t.Fatalf("batch result %d mismatch: got=%+v want=%+v", i, got, want)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for batch result %d", i)
+		}
+	}
+	batchRaw, err := json.Marshal(partialVerifyBatchWire{
+		Kind: "partial-verify-batch", Verifier: 10,
+		Entries:   []partialVerifyBatchEntry{{Dealer: 9, TranscriptDigest: []byte("dealer-9"), Valid: true}},
+		Signature: []byte("batch-signature"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err = net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	batchRaw = append(batchRaw, '\n')
+	if written, writeErr := conn.Write(batchRaw); writeErr != nil || written != len(batchRaw) {
+		_ = conn.Close()
+		t.Fatalf("write envelope: bytes=%d/%d err=%v", written, len(batchRaw), writeErr)
+	}
+	_ = conn.Close()
+	select {
+	case got := <-out:
+		if got.Dealer != 9 || got.Verifier != 10 || got.BatchCount != 1 || got.BatchIndex != 0 || len(got.BatchSignature) == 0 {
+			t.Fatalf("batch envelope expansion mismatch: %+v", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for batch envelope result")
 	}
 }
 

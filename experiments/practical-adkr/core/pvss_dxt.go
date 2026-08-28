@@ -861,6 +861,13 @@ func (b *DXTBackend) partialVerifyLanes(nodeID int, transcript *DXTTranscript) (
 	if !verifyCommitmentDegree(b.curve, transcript.Commitments, b.newCommittee, b.sharingDegree) {
 		return nil, false
 	}
+	return b.partialVerifyLanesPrevalidated(nodeID, transcript)
+}
+
+// partialVerifyLanesPrevalidated verifies only the verifier-specific lane
+// equations. Callers must have checked transcript shape and commitment degree
+// for this immutable transcript before entering this fast path.
+func (b *DXTBackend) partialVerifyLanesPrevalidated(nodeID int, transcript *DXTTranscript) (map[int]bool, bool) {
 	ids, ok := b.partialLaneIDs(nodeID)
 	if !ok {
 		return nil, false

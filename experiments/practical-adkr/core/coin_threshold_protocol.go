@@ -292,7 +292,7 @@ func (s *dualThresholdSigner) ID() int { return s.high.ID() }
 
 func (s *dualThresholdSigner) selectSigner(domain string) dmvba.ThresholdSigner {
 	switch strings.ToUpper(strings.TrimSpace(domain)) {
-	case "PD_STORED", "PD_LOCKED":
+	case "PD_STORED", "PD_LOCKED", apdbThresholdDomain:
 		return s.high
 	default:
 		return s.low
@@ -449,8 +449,8 @@ func sendThresholdCoinShare(ctx context.Context, cfg Config, from, to int, addr 
 		conn, dialErr := dialWithBandwidth("tcp", addr, timeout)
 		if dialErr == nil {
 			_ = conn.SetDeadline(time.Now().Add(timeout))
-			recordSentBytes(len(raw))
-			_, writeErr := conn.Write(raw)
+			written, writeErr := conn.Write(raw)
+			recordSentBytes(written)
 			var ack thresholdCoinShareWire
 			if writeErr == nil {
 				writeErr = json.NewDecoder(conn).Decode(&ack)

@@ -220,8 +220,8 @@ func runAPDBDispersal(
 				continue
 			}
 			_ = conn.SetWriteDeadline(time.Now().Add(receiptTO))
-			recordSentBytes(len(reqBytes))
-			_, _ = conn.Write(reqBytes)
+			written, _ := conn.Write(reqBytes)
+			recordSentBytes(written)
 			_ = conn.Close()
 		}
 
@@ -406,7 +406,7 @@ func runAPDBDispersalLocal(
 }
 
 func verifyAPDBCertificate(cert APDBCertificate, nodePub map[int]ed25519.PublicKey, configuredFaults ...int) bool {
-	if len(cert.Root) != sha256.Size || len(cert.Receipts) == 0 {
+	if len(cert.Root) != sha256.Size {
 		return false
 	}
 	committeeSize := len(nodePub)
@@ -418,6 +418,11 @@ func verifyAPDBCertificate(cert APDBCertificate, nodePub map[int]ed25519.PublicK
 		f = configuredFaults[0]
 	}
 	if committeeSize <= 0 || committeeSize < 3*f+1 {
+		return false
+	}
+	if len(cert.Receipts) == 0 {
+		// Compact proofs require a trusted setup key. Never authenticate one
+		// using only the group key carried by the untrusted certificate.
 		return false
 	}
 	if len(cert.MerkleRoot) > 0 || len(cert.ValueDigest) > 0 || cert.DataShards > 0 || cert.TotalShards > 0 {
@@ -450,6 +455,18 @@ func verifyAPDBCertificate(cert APDBCertificate, nodePub map[int]ed25519.PublicK
 		}
 	}
 	return true
+}
+
+func verifyAPDBCertificateWithThresholdPublic(
+	cert APDBCertificate,
+	nodePub map[int]ed25519.PublicKey,
+	f int,
+	trustedPublic []byte,
+) bool {
+	if len(cert.Receipts) > 0 {
+		return verifyAPDBCertificate(cert, nodePub, f)
+	}
+	return verifyAPDBThresholdCertificate(cert, f, trustedPublic)
 }
 
 func apdbCertificateThreshold(f int, committeeSize int) int {

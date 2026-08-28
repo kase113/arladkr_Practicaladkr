@@ -9,7 +9,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -17,15 +19,62 @@ import (
 	"time"
 )
 
-// partialVerifyResultWire is a compact, signed result multicast.  It carries
-// only the verifier's lane bits and a digest of the already dispersed
-// transcript; receivers never trust a result for a different transcript.
+// partialVerifyResultWire is a compact, signed result multicast. It carries
+// one bit for the verifier's deterministic responsibility window and a digest
+// of the dispersed transcript; receivers derive the window from Verifier.
 type partialVerifyResultWire struct {
-	Dealer           int          `json:"dealer"`
-	Verifier         int          `json:"verifier"`
-	TranscriptDigest []byte       `json:"transcript_digest"`
-	Lanes            map[int]bool `json:"lanes"`
-	Signature        []byte       `json:"signature"`
+	Dealer           int    `json:"dealer"`
+	Verifier         int    `json:"verifier"`
+	TranscriptDigest []byte `json:"transcript_digest"`
+	Valid            bool   `json:"valid"`
+	Signature        []byte `json:"signature"`
+	BatchID          []byte `json:"batch_id,omitempty"`
+	BatchIndex       int    `json:"batch_index,omitempty"`
+	BatchCount       int    `json:"batch_count,omitempty"`
+	BatchSignature   []byte `json:"batch_signature,omitempty"`
+}
+
+type partialVerifyBatchEntry struct {
+	Dealer           int    `json:"dealer"`
+	TranscriptDigest []byte `json:"transcript_digest"`
+	Valid            bool   `json:"valid"`
+}
+
+type partialVerifyBatchWire struct {
+	Kind      string                    `json:"kind"`
+	Verifier  int                       `json:"verifier"`
+	Entries   []partialVerifyBatchEntry `json:"entries"`
+	Signature []byte                    `json:"signature"`
+}
+
+func partialVerifyBatchSignatureEnabled() bool {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv("PRACTICAL_PARTIAL_VERIFY_BATCH_SIGNATURE")))
+	return raw == "1" || raw == "true" || raw == "yes"
+}
+
+func partialVerifyBatchMessage(verifier int, entries []partialVerifyBatchEntry) []byte {
+	h := sha256.New()
+	h.Write([]byte("PRACTICAL-PARTIAL-VERIFY-BATCH-v1"))
+	var numbers [16]byte
+	binary.BigEndian.PutUint64(numbers[:8], uint64(verifier))
+	binary.BigEndian.PutUint64(numbers[8:], uint64(len(entries)))
+	h.Write(numbers[:])
+	for _, entry := range entries {
+		binary.BigEndian.PutUint64(numbers[:8], uint64(entry.Dealer))
+		h.Write(numbers[:8])
+		h.Write(entry.TranscriptDigest)
+		if entry.Valid {
+			h.Write([]byte{1})
+		} else {
+			h.Write([]byte{0})
+		}
+	}
+	return h.Sum(nil)
+}
+
+func partialVerifyBatchID(verifier int, entries []partialVerifyBatchEntry) []byte {
+	digest := partialVerifyBatchMessage(verifier, entries)
+	return append([]byte(nil), digest...)
 }
 
 func partialVerifyTranscriptDigest(transcript *DXTTranscript) ([]byte, error) {
@@ -50,18 +99,10 @@ func partialVerifyResultMessage(w *partialVerifyResultWire) []byte {
 	binary.BigEndian.PutUint64(b[8:], uint64(w.Verifier))
 	h.Write(b[:])
 	h.Write(w.TranscriptDigest)
-	ids := make([]int, 0, len(w.Lanes))
-	for rid := range w.Lanes {
-		ids = append(ids, rid)
-	}
-	sort.Ints(ids)
-	for _, rid := range ids {
-		var lane [9]byte
-		binary.BigEndian.PutUint64(lane[:8], uint64(rid))
-		if w.Lanes[rid] {
-			lane[8] = 1
-		}
-		h.Write(lane[:])
+	if w.Valid {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
 	}
 	return h.Sum(nil)
 }
@@ -110,6 +151,17 @@ type partialVerifyService struct {
 	wg        sync.WaitGroup
 }
 
+type partialVerifyCountingReader struct {
+	reader io.Reader
+	read   int
+}
+
+func (reader *partialVerifyCountingReader) Read(buffer []byte) (int, error) {
+	n, err := reader.reader.Read(buffer)
+	reader.read += n
+	return n, err
+}
+
 func startPartialVerifyService(ctx context.Context, cfg Config, committee []int) (*partialVerifyService, error) {
 	addresses, err := partialVerifyNodeAddrMap(cfg)
 	if err != nil {
@@ -133,7 +185,7 @@ func startPartialVerifyService(ctx context.Context, cfg Config, committee []int)
 			service.close()
 			return nil, fmt.Errorf("partial verification address for node %d is invalid", recipient)
 		}
-		listener, listenErr := net.Listen("tcp", net.JoinHostPort("0.0.0.0", port))
+		listener, listenErr := listenRecastWithRetry(ctx, net.JoinHostPort("0.0.0.0", port))
 		if listenErr != nil {
 			service.close()
 			return nil, fmt.Errorf("partial verification listener %d: %w", recipient, listenErr)
@@ -168,16 +220,56 @@ func servePartialVerifyResults(
 			}
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
-		var wire partialVerifyResultWire
-		if err := json.NewDecoder(conn).Decode(&wire); err == nil {
-			if body, marshalErr := json.Marshal(wire); marshalErr == nil {
-				recordRecvBytes(len(body))
+		counted := &partialVerifyCountingReader{reader: conn}
+		decoder := json.NewDecoder(counted)
+		for {
+			var raw json.RawMessage
+			if err := decoder.Decode(&raw); err != nil {
+				break
+			}
+			var kind struct {
+				Kind string `json:"kind"`
+			}
+			if json.Unmarshal(raw, &kind) != nil {
+				continue
+			}
+			if kind.Kind == "partial-verify-batch" {
+				var batch partialVerifyBatchWire
+				if json.Unmarshal(raw, &batch) != nil || batch.Verifier < 0 || len(batch.Entries) == 0 || len(batch.Signature) == 0 {
+					continue
+				}
+				batchID := partialVerifyBatchID(batch.Verifier, batch.Entries)
+				for index, entry := range batch.Entries {
+					wire := partialVerifyResultWire{
+						Dealer: entry.Dealer, Verifier: batch.Verifier, TranscriptDigest: entry.TranscriptDigest,
+						Valid: entry.Valid, BatchID: batchID, BatchIndex: index, BatchCount: len(batch.Entries),
+					}
+					if index == 0 {
+						wire.BatchSignature = append([]byte(nil), batch.Signature...)
+					}
+					select {
+					case out <- wire:
+					case <-ctx.Done():
+						_ = conn.Close()
+						recordRecvBytes(counted.read)
+						return
+					}
+				}
+				continue
+			}
+			var wire partialVerifyResultWire
+			if json.Unmarshal(raw, &wire) != nil {
+				continue
 			}
 			select {
 			case out <- wire:
 			case <-ctx.Done():
+				_ = conn.Close()
+				recordRecvBytes(counted.read)
+				return
 			}
 		}
+		recordRecvBytes(counted.read)
 		_ = conn.Close()
 	}
 }
@@ -219,8 +311,15 @@ func runPartialVerificationMulticast(
 	configuredLocal := parseNodeIDSet(cfg.ProtocolLocalNodeIDs)
 	localIDs := make([]int, 0, len(configuredLocal))
 	verifierSet := make(map[int]struct{}, len(verifiers))
+	responsibilityByVerifier := make(map[int][]int, len(verifiers))
 	for _, id := range verifiers {
 		verifierSet[id] = struct{}{}
+		lanes, ok := dxt.partialLaneIDs(id)
+		if !ok {
+			return nil, nil, fmt.Errorf("partial verification verifier %d has no responsibility window", id)
+		}
+		lanes = append([]int(nil), lanes...)
+		responsibilityByVerifier[id] = lanes
 		if _, ok := configuredLocal[id]; ok && service.channels[id] != nil {
 			localIDs = append(localIDs, id)
 		}
@@ -231,10 +330,7 @@ func runPartialVerificationMulticast(
 	}
 	coverage := make(map[int]int, len(dxt.newCommittee))
 	for _, verifier := range verifiers {
-		lanes, ok := dxt.partialLaneIDs(verifier)
-		if !ok {
-			return nil, nil, fmt.Errorf("partial verification verifier %d has no responsibility window", verifier)
-		}
+		lanes := responsibilityByVerifier[verifier]
 		seenLanes := make(map[int]struct{}, len(lanes))
 		for _, rid := range lanes {
 			if _, duplicate := seenLanes[rid]; duplicate {
@@ -283,7 +379,11 @@ func runPartialVerificationMulticast(
 	}()
 
 	transcriptDigests := make(map[int][]byte, len(selectedIDs))
+	transcriptStaticValid := make(map[int]bool, len(selectedIDs))
 	for _, dealer := range selectedIDs {
+		transcript := transcripts[dealer]
+		transcriptStaticValid[dealer] = transcript != nil && dxt.validateTranscriptShape(transcript) &&
+			verifyCommitmentDegree(dxt.curve, transcript.Commitments, dxt.newCommittee, dxt.sharingDegree)
 		digest, err := partialVerifyTranscriptDigest(transcripts[dealer])
 		if err != nil {
 			return nil, nil, fmt.Errorf("digest selected transcript %d: %w", dealer, err)
@@ -292,12 +392,12 @@ func runPartialVerificationMulticast(
 	}
 
 	positive := make(map[int]map[int]int, len(selectedIDs))
-	seen := make(map[int]map[int]map[int]struct{}, len(selectedIDs))
+	seen := make(map[int]map[int]struct{}, len(selectedIDs))
 	for _, dealer := range selectedIDs {
 		positive[dealer] = make(map[int]int, len(dxt.newCommittee))
-		seen[dealer] = make(map[int]map[int]struct{}, len(verifiers))
+		seen[dealer] = make(map[int]struct{}, len(verifiers))
 	}
-	accept := func(wire partialVerifyResultWire) {
+	acceptSingle := func(wire partialVerifyResultWire, verifySignature bool) {
 		if _, ok := verifierSet[wire.Verifier]; !ok {
 			return
 		}
@@ -308,115 +408,218 @@ func runPartialVerificationMulticast(
 			return
 		}
 		pub := dxt.recipientSignPub[wire.Verifier]
-		if pub == nil || !ecdsa.VerifyASN1(pub, partialVerifyResultMessage(&wire), wire.Signature) {
+		if verifySignature && (pub == nil || !ecdsa.VerifyASN1(pub, partialVerifyResultMessage(&wire), wire.Signature)) {
 			return
 		}
-		expected, ok := dxt.partialLaneIDs(wire.Verifier)
-		if !ok || len(wire.Lanes) != len(expected) {
+		expected, ok := responsibilityByVerifier[wire.Verifier]
+		if !ok {
 			return
 		}
-		expectedSet := make(map[int]struct{}, len(expected))
+		if _, duplicate := seen[wire.Dealer][wire.Verifier]; duplicate {
+			return
+		}
+		seen[wire.Dealer][wire.Verifier] = struct{}{}
 		for _, rid := range expected {
-			expectedSet[rid] = struct{}{}
-		}
-		for rid := range wire.Lanes {
-			if _, ok := expectedSet[rid]; !ok {
-				return
-			}
-		}
-		if seen[wire.Dealer][wire.Verifier] == nil {
-			seen[wire.Dealer][wire.Verifier] = make(map[int]struct{}, len(expected))
-		}
-		for _, rid := range expected {
-			if _, duplicate := seen[wire.Dealer][wire.Verifier][rid]; duplicate {
-				return
-			}
-			seen[wire.Dealer][wire.Verifier][rid] = struct{}{}
-			if wire.Lanes[rid] {
+			if wire.Valid {
 				positive[wire.Dealer][rid]++
 			}
 		}
 	}
+	type batchState struct {
+		entries   map[int]partialVerifyResultWire
+		signature []byte
+	}
+	batchStates := make(map[string]*batchState, len(verifiers))
+	completedBatches := make(map[string]struct{}, len(verifiers))
+	accept := func(wire partialVerifyResultWire) {
+		if wire.BatchCount <= 0 {
+			acceptSingle(wire, true)
+			return
+		}
+		if !partialVerifyBatchSignatureEnabled() || wire.BatchCount != len(selectedIDs) ||
+			wire.BatchIndex < 0 || wire.BatchIndex >= wire.BatchCount || len(wire.BatchID) == 0 ||
+			wire.Signature != nil {
+			return
+		}
+		if _, ok := verifierSet[wire.Verifier]; !ok {
+			return
+		}
+		key := fmt.Sprintf("%d:%x", wire.Verifier, wire.BatchID)
+		if _, done := completedBatches[key]; done {
+			return
+		}
+		state := batchStates[key]
+		if state == nil {
+			if len(batchStates) >= len(verifiers)*2+8 {
+				return
+			}
+			state = &batchState{entries: make(map[int]partialVerifyResultWire, wire.BatchCount)}
+			batchStates[key] = state
+		}
+		if len(wire.BatchSignature) > 0 {
+			if len(state.signature) > 0 && !bytesEqual(state.signature, wire.BatchSignature) {
+				delete(batchStates, key)
+				return
+			}
+			state.signature = append([]byte(nil), wire.BatchSignature...)
+		}
+		if previous, exists := state.entries[wire.BatchIndex]; exists {
+			if previous.Dealer != wire.Dealer || !bytesEqual(previous.TranscriptDigest, wire.TranscriptDigest) || previous.Valid != wire.Valid {
+				delete(batchStates, key)
+			}
+			return
+		}
+		state.entries[wire.BatchIndex] = wire
+		if len(state.entries) != wire.BatchCount || len(state.signature) == 0 {
+			return
+		}
+		entries := make([]partialVerifyBatchEntry, wire.BatchCount)
+		ordered := make([]partialVerifyResultWire, wire.BatchCount)
+		for index := range ordered {
+			entry, exists := state.entries[index]
+			if !exists || entry.BatchCount != wire.BatchCount || entry.BatchIndex != index {
+				return
+			}
+			if index >= len(selectedIDs) || entry.Dealer != selectedIDs[index] ||
+				!bytesEqual(entry.TranscriptDigest, transcriptDigests[entry.Dealer]) {
+				delete(batchStates, key)
+				return
+			}
+			ordered[index] = entry
+			entries[index] = partialVerifyBatchEntry{Dealer: entry.Dealer, TranscriptDigest: entry.TranscriptDigest, Valid: entry.Valid}
+		}
+		pub := dxt.recipientSignPub[wire.Verifier]
+		if pub == nil || !bytesEqual(partialVerifyBatchID(wire.Verifier, entries), wire.BatchID) ||
+			!ecdsa.VerifyASN1(pub, partialVerifyBatchMessage(wire.Verifier, entries), state.signature) {
+			delete(batchStates, key)
+			return
+		}
+		completedBatches[key] = struct{}{}
+		delete(batchStates, key)
+		for _, entry := range ordered {
+			acceptSingle(entry, false)
+		}
+	}
 
-	prepared := make(map[int]map[int]struct {
-		wire partialVerifyResultWire
-		raw  []byte
-	}, len(localIDs))
+	prepared := make(map[int][]byte, len(localIDs))
+	batchSignatureMode := partialVerifyBatchSignatureEnabled()
 	for _, verifier := range localIDs {
 		if dxt.recipientSignPriv[verifier] == nil {
 			return nil, nil, fmt.Errorf("partial verification local signer %d key unavailable", verifier)
 		}
-		prepared[verifier] = make(map[int]struct {
-			wire partialVerifyResultWire
-			raw  []byte
-		}, len(selectedIDs))
+		batch := make([]byte, 0, len(selectedIDs)*256)
+		wires := make([]partialVerifyResultWire, 0, len(selectedIDs))
+		entries := make([]partialVerifyBatchEntry, 0, len(selectedIDs))
 		for _, dealer := range selectedIDs {
-			lanes, ok := dxt.partialVerifyLanes(verifier, transcripts[dealer])
-			if !ok {
-				lanes = make(map[int]bool)
-				if expected, expectedOK := dxt.partialLaneIDs(verifier); expectedOK {
-					for _, rid := range expected {
-						lanes[rid] = false
-					}
+			lanes, ok := map[int]bool(nil), false
+			if transcriptStaticValid[dealer] {
+				lanes, ok = dxt.partialVerifyLanesPrevalidated(verifier, transcripts[dealer])
+			}
+			expected, expectedOK := responsibilityByVerifier[verifier]
+			allValid := ok && expectedOK && len(lanes) == len(expected)
+			for _, rid := range expected {
+				if !lanes[rid] {
+					allValid = false
+					break
 				}
 			}
-			wire := partialVerifyResultWire{Dealer: dealer, Verifier: verifier, TranscriptDigest: transcriptDigests[dealer], Lanes: lanes}
-			var err error
-			wire.Signature, err = ecdsa.SignASN1(rand.Reader, dxt.recipientSignPriv[verifier], partialVerifyResultMessage(&wire))
+			wire := partialVerifyResultWire{Dealer: dealer, Verifier: verifier, TranscriptDigest: transcriptDigests[dealer], Valid: allValid}
+			wires = append(wires, wire)
+			entries = append(entries, partialVerifyBatchEntry{Dealer: dealer, TranscriptDigest: transcriptDigests[dealer], Valid: allValid})
+		}
+		if batchSignatureMode {
+			message := partialVerifyBatchMessage(verifier, entries)
+			signature, err := ecdsa.SignASN1(rand.Reader, dxt.recipientSignPriv[verifier], message)
 			if err != nil {
 				return nil, nil, err
 			}
-			raw, err := json.Marshal(wire)
+			batchID := partialVerifyBatchID(verifier, entries)
+			for index := range wires {
+				wires[index].BatchID = batchID
+				wires[index].BatchIndex = index
+				wires[index].BatchCount = len(wires)
+				if index == 0 {
+					wires[index].BatchSignature = signature
+				}
+			}
+		}
+		if batchSignatureMode {
+			raw, err := json.Marshal(partialVerifyBatchWire{
+				Kind: "partial-verify-batch", Verifier: verifier, Entries: entries,
+				Signature: wires[0].BatchSignature,
+			})
 			if err != nil {
 				return nil, nil, err
 			}
-			prepared[verifier][dealer] = struct {
-				wire partialVerifyResultWire
-				raw  []byte
-			}{wire: wire, raw: raw}
+			batch = append(batch, raw...)
+			batch = append(batch, '\n')
+		}
+		for _, wire := range wires {
+			if !batchSignatureMode {
+				var err error
+				wire.Signature, err = ecdsa.SignASN1(rand.Reader, dxt.recipientSignPriv[verifier], partialVerifyResultMessage(&wire))
+				if err != nil {
+					return nil, nil, err
+				}
+			}
+			if !batchSignatureMode {
+				raw, err := json.Marshal(wire)
+				if err != nil {
+					return nil, nil, err
+				}
+				batch = append(batch, raw...)
+				batch = append(batch, '\n')
+			}
 			// A local verifier's result is trusted only after the same signature
-			// and lane-shape checks used for received multicast messages.
+			// and batch/lane checks used for received multicast messages.
 			accept(wire)
 		}
+		prepared[verifier] = batch
 	}
 
 	var sendWG sync.WaitGroup
 	for _, verifier := range localIDs {
-		for _, dealer := range selectedIDs {
-			preparedResult := prepared[verifier][dealer]
-			raw := preparedResult.raw
-			for _, target := range verifiers {
-				if target == verifier {
-					continue
-				}
-				targetAddr := addrMap[target]
-				sendWG.Add(1)
-				go func(from, to int, addr string, body []byte) {
-					defer sendWG.Done()
-					for {
-						select {
-						case <-stageCtx.Done():
-							return
-						default:
-						}
-						conn, dialErr := dialWithBandwidth("tcp", addr, 500*time.Millisecond)
-						if dialErr == nil {
-							_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-							recordSentBytes(len(body))
-							_, writeErr := conn.Write(body)
-							_ = conn.Close()
-							if writeErr == nil {
-								return
+		body := prepared[verifier]
+		for _, target := range verifiers {
+			if target == verifier {
+				continue
+			}
+			targetAddr := addrMap[target]
+			sendWG.Add(1)
+			go func(addr string, batch []byte) {
+				defer sendWG.Done()
+				for {
+					select {
+					case <-stageCtx.Done():
+						return
+					default:
+					}
+					conn, dialErr := dialWithBandwidth("tcp", addr, 500*time.Millisecond)
+					if dialErr == nil {
+						_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+						remaining := batch
+						var writeErr error
+						for len(remaining) > 0 {
+							var written int
+							written, writeErr = conn.Write(remaining)
+							recordSentBytes(written)
+							remaining = remaining[written:]
+							if writeErr != nil || written == 0 {
+								break
 							}
 						}
-						select {
-						case <-stageCtx.Done():
+						_ = conn.Close()
+						if writeErr == nil && len(remaining) == 0 {
 							return
-						case <-time.After(40 * time.Millisecond):
 						}
 					}
-				}(verifier, target, targetAddr, raw)
-			}
+					select {
+					case <-stageCtx.Done():
+						return
+					case <-time.After(40 * time.Millisecond):
+					}
+				}
+			}(targetAddr, body)
 		}
 	}
 

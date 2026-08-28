@@ -134,6 +134,10 @@ type APDBReceipt struct {
 	Sender    int
 	ChunkHash []byte
 	Signature []byte
+	// ThresholdShare is an optional BLS receipt share used to form the
+	// compact APDB certificate. The Ed25519 Signature remains for legacy
+	// receipt validation and local compatibility paths.
+	ThresholdShare []byte `json:",omitempty"`
 }
 
 // APDBCertificate proves a transcript was successfully dispersed (n-f receipts).
@@ -145,6 +149,11 @@ type APDBCertificate struct {
 	DataShards  int
 	TotalShards int
 	Receipts    []APDBReceipt
+	// Compact threshold proof. When present, Receipts may be omitted from the
+	// wire; the root/digest/RS metadata remains the same. ThresholdPublic is a
+	// legacy compatibility field; new wires use the trusted setup registry.
+	ThresholdSignature []byte `json:",omitempty"`
+	ThresholdPublic    []byte `json:",omitempty"`
 }
 
 // APDBDispersalResult summarizes the dispersal outcome needed by later recover.

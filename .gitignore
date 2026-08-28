@@ -1,0 +1,38 @@
+# Go build and test artifacts
+/bin/
+/experiments/practical-adkr/bin/
+/*.test
+*.out
+*.prof
+coverage.*
+
+# Local protocol runs and generated key material
+/cv-run/
+**/store/
+**/ready/
+**/private/
+*.scalar
+*.pem
+*.key
+*.p12
+
+# Local environment and editor files
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+
+# Terraform local state and provider cache
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+graft/

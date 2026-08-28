@@ -1,0 +1,9 @@
+instance_count        = 10
+enable_public_protocol = true
+
+protocol_public_port_from = 30000
+protocol_public_port_to   = 60000
+
+# Keep this empty for a single-region stack. For a multi-region run, add only
+# the other regional stacks' public /32 CIDRs after their instances exist.
+protocol_public_peer_cidrs = []

@@ -1,0 +1,55 @@
+{
+  "schema": "arladkr-local-network-comparison-matrix-v1",
+  "name": "n10-implementation-latency-pilot-v1",
+  "purpose": "single-host implementation comparison; not a matched-security claim",
+  "topology": {
+    "old_nodes": 10,
+    "old_faults": 3,
+    "new_nodes": 10,
+    "new_faults": 3,
+    "transport": "strict-tcp-loopback",
+    "processes_per_protocol": 10
+  },
+  "execution": {
+    "setup": "fresh owner-provisioned setup before every run",
+    "warmup_runs_per_protocol": 1,
+    "measured_runs_per_protocol": 3,
+    "measured_order": [
+      "practical-1",
+      "arladkr-1",
+      "practical-2",
+      "arladkr-2",
+      "practical-3",
+      "arladkr-3"
+    ],
+    "latency_field": "CLUSTER_BENCH_RESULT.mean_node_latency_ms",
+    "setup_included_in_latency": true,
+    "offline_key_generation_included": false
+  },
+  "points": [
+    {
+      "name": "practical-n10-f3-k4-paillier3072",
+      "protocol": "PRACTICAL-ADKR",
+      "kappa": 4,
+      "paillier_bits": 3072,
+      "fallback_policy": "off",
+      "command": "PRACTICAL_MP_N=10 PRACTICAL_MP_F=3 PRACTICAL_MP_KAPPA=4 PRACTICAL_MP_RUNS=1 PRACTICAL_MP_TIMEOUT=300s PRACTICAL_MP_PAILLIER_BITS=3072 KEEP_PRACTICAL_MP_RUN=1 ./experiments/practical-adkr/scripts/run_practical_multiprocess_n7.sh"
+    },
+    {
+      "name": "arladkr-n10-f3-smoke-c3-c3",
+      "protocol": "ARLADKR-GO",
+      "cv_apvss_mode": "cv-sapvss-v2-scalar-group",
+      "failure_target": "smoke",
+      "proposer_sample": 3,
+      "validator_sample": 3,
+      "experiment_sampling_union_bound": "23/120",
+      "command": "RLADKR_CV_EPOCH_TIMEOUT=300s ./scripts/run_cv_cluster.sh 10 3 RUN_DIR BASE_PORT"
+    }
+  ],
+  "reporting_constraints": [
+    "Report this point as a functional implementation-latency comparison only.",
+    "Do not describe the ARLADKR smoke sample as negligible-failure security.",
+    "Do not describe the two protocol points as matched-security.",
+    "Retain per-run values and report dispersion rather than only the best run."
+  ]
+}

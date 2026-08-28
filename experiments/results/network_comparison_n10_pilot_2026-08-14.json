@@ -1,0 +1,170 @@
+{
+  "schema": "arladkr-local-network-comparison-result-v1",
+  "classification": "optimization-validation-pilot-not-final-paper-data",
+  "matrix": {
+    "path": "experiments/network_comparison_matrix_v1.json",
+    "sha256": "531cbad9f71ca538bb6569ca61ce32b7e913f86deb63b1f3373a839b519f5436"
+  },
+  "source": {
+    "git_commit": "545a3951d1e3b2671f239301af829f3edaa60bba",
+    "worktree_dirty": true,
+    "note": "The measured optimization changes were not committed at collection time."
+  },
+  "host": {
+    "logical_cpus": 32,
+    "transport": "strict-tcp-loopback",
+    "initial_load_average_1m_5m_15m": [0.31, 0.66, 1.14]
+  },
+  "artifacts": {
+    "local_root": "/tmp/arladkr-comparison-n10.ntkuQ1",
+    "retention": "local-only raw logs; summary values are preserved in this manifest"
+  },
+  "warmup_excluded": {
+    "practical_mean_node_latency_ms": 3747.83,
+    "arladkr_mean_node_latency_ms": 29656.51
+  },
+  "measured": {
+    "practical": {
+      "runs": [
+        {
+          "run": 1,
+          "successful_nodes": 10,
+          "consensus_hashes": 1,
+          "quorum_latency_ms": 3732.75,
+          "all_nodes_latency_ms": 3782.23,
+          "mean_node_latency_ms": 3742.98,
+          "mean_setup_ms": 9.62,
+          "mean_sent_bytes_per_node": 1008048,
+          "mean_recv_bytes_per_node": 1007874
+        },
+        {
+          "run": 2,
+          "successful_nodes": 10,
+          "consensus_hashes": 1,
+          "quorum_latency_ms": 3769.26,
+          "all_nodes_latency_ms": 3793.03,
+          "mean_node_latency_ms": 3770.47,
+          "mean_setup_ms": 9.12,
+          "mean_sent_bytes_per_node": 1012179,
+          "mean_recv_bytes_per_node": 1011839
+        },
+        {
+          "run": 3,
+          "successful_nodes": 10,
+          "consensus_hashes": 1,
+          "quorum_latency_ms": 3742.59,
+          "all_nodes_latency_ms": 3802.04,
+          "mean_node_latency_ms": 3744.82,
+          "mean_setup_ms": 9.71,
+          "mean_sent_bytes_per_node": 1003668,
+          "mean_recv_bytes_per_node": 1003466
+        }
+      ],
+      "summary": {
+        "mean_node_latency_ms": 3752.76,
+        "median_node_latency_ms": 3744.82,
+        "min_node_latency_ms": 3742.98,
+        "max_node_latency_ms": 3770.47,
+        "sample_stddev_node_latency_ms": 15.37,
+        "coefficient_of_variation": 0.0041,
+        "mean_quorum_latency_ms": 3748.20,
+        "median_quorum_latency_ms": 3742.59,
+        "mean_all_nodes_latency_ms": 3792.43,
+        "median_all_nodes_latency_ms": 3793.03,
+        "mean_online_protocol_ms": 3743.07,
+        "mean_sent_bytes_per_node": 1007965,
+        "mean_recv_bytes_per_node": 1007726
+      },
+      "mean_phase_ms": {
+        "dxt_dealing": 353.67,
+        "apdb_dispersal": 62.88,
+        "mvba_agree": 818.14,
+        "partial_verify": 648.90,
+        "recover": 935.45,
+        "derive": 898.66
+      }
+    },
+    "arladkr": {
+      "runs": [
+        {
+          "run": 1,
+          "successful_nodes": 10,
+          "consensus_hashes": 1,
+          "quorum_latency_ms": 22410.05,
+          "all_nodes_latency_ms": 22422.32,
+          "mean_node_latency_ms": 22403.24,
+          "mean_setup_ms": 126.15,
+          "mean_sent_bytes_per_node": 3453886,
+          "mean_recv_bytes_per_node": 3367369,
+          "mean_leaf_build_ms": 5755.00,
+          "mean_candidate_formation_ms": 7806.20,
+          "mean_aggregate_agreement_ms": 287.60
+        },
+        {
+          "run": 2,
+          "successful_nodes": 10,
+          "consensus_hashes": 1,
+          "quorum_latency_ms": 19705.29,
+          "all_nodes_latency_ms": 19715.55,
+          "mean_node_latency_ms": 19662.16,
+          "mean_setup_ms": 125.14,
+          "mean_sent_bytes_per_node": 2873117,
+          "mean_recv_bytes_per_node": 2815236,
+          "mean_leaf_build_ms": 5729.90,
+          "mean_candidate_formation_ms": 5274.90,
+          "mean_aggregate_agreement_ms": 293.80
+        },
+        {
+          "run": 3,
+          "successful_nodes": 10,
+          "consensus_hashes": 1,
+          "quorum_latency_ms": 22740.18,
+          "all_nodes_latency_ms": 22753.62,
+          "mean_node_latency_ms": 22733.74,
+          "mean_setup_ms": 124.95,
+          "mean_sent_bytes_per_node": 3222521,
+          "mean_recv_bytes_per_node": 3111419,
+          "mean_leaf_build_ms": 5768.60,
+          "mean_candidate_formation_ms": 7928.10,
+          "mean_aggregate_agreement_ms": 307.60
+        }
+      ],
+      "summary": {
+        "mean_node_latency_ms": 21599.71,
+        "median_node_latency_ms": 22403.24,
+        "min_node_latency_ms": 19662.16,
+        "max_node_latency_ms": 22733.74,
+        "sample_stddev_node_latency_ms": 1686.09,
+        "coefficient_of_variation": 0.0781,
+        "mean_quorum_latency_ms": 21618.51,
+        "median_quorum_latency_ms": 22410.05,
+        "mean_all_nodes_latency_ms": 21630.50,
+        "median_all_nodes_latency_ms": 22422.32,
+        "mean_online_protocol_ms": 21474.30,
+        "mean_sent_bytes_per_node": 3183175,
+        "mean_recv_bytes_per_node": 3098008
+      },
+      "mean_phase_ms": {
+        "leaf_build": 5751.17,
+        "candidate_formation": 7003.07,
+        "aggregate_agreement": 296.33,
+        "recover_shard": 1296.53,
+        "receipt": 106.53
+      }
+    }
+  },
+  "comparison": {
+    "arladkr_over_practical_mean_node_latency": 5.756,
+    "arladkr_over_practical_median_node_latency": 5.982,
+    "arladkr_over_practical_mean_quorum_latency": 5.768,
+    "arladkr_over_practical_mean_all_nodes_latency": 5.704,
+    "arladkr_over_practical_mean_sent_bytes": 3.158,
+    "arladkr_over_practical_mean_recv_bytes": 3.074
+  },
+  "reporting_constraints": [
+    "This result validates the implementation optimization; it is not final paper data because the worktree was dirty.",
+    "The ARLADKR point uses functional smoke sampling with union bound 23/120.",
+    "The Practical and ARLADKR points are not matched-security protocol instances.",
+    "Raw per-run values and ARLADKR variance must accompany any reported mean."
+  ]
+}

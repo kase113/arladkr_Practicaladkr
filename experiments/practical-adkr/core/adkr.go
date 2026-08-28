@@ -347,6 +347,17 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 		return failWithPartial(err, "setup")
 	}
 	defer closeCompServiceAfterGrace(compService, ctx)
+	// Establish the CompProve transport barrier before the expensive DXT,
+	// APDB and MVBA phases. Otherwise a locally slow process can reach the
+	// first probe after faster peers have already finished and closed their
+	// listeners, producing a false readiness timeout.
+	readyCtx, readyCancel := context.WithTimeout(ctx, compKeyDerivationTimeout(cfg))
+	if err := waitCompKeyServiceReady(readyCtx, cfg, newC, compService); err != nil {
+		readyCancel()
+		return failWithPartial(err, "setup")
+	}
+	readyCancel()
+	compService.ready = true
 	partialVerifyService, err := startPartialVerifyService(ctx, cfg, newC)
 	if err != nil {
 		if cfg.StrictNetwork {
@@ -1636,6 +1647,12 @@ func runRecastRecovery(
 		}
 	}
 	recoverFetchRetryStep := recoverRetryStep(cfg.F)
+	recoverSpeculativeFanout := recoverSpeculativeExtra(cfg.F)
+	if raw := strings.TrimSpace(os.Getenv("PRACTICAL_RECOVER_SPECULATIVE_EXTRA")); raw != "" {
+		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
+			recoverSpeculativeFanout = v
+		}
+	}
 	if raw := strings.TrimSpace(os.Getenv("PRACTICAL_RECOVER_FETCH_RETRY_STEP")); raw != "" {
 		if v, err := strconv.Atoi(raw); err == nil && v > 0 {
 			recoverFetchRetryStep = v
@@ -1718,7 +1735,7 @@ func runRecastRecovery(
 		if !lastFetchDispatch[recipient].IsZero() && time.Since(lastFetchDispatch[recipient]) >= recoverFetchStallInterval {
 			// Gradually widen the search only when recovery appears stalled.
 			extraSteps := int(time.Since(lastFetchDispatch[recipient]) / recoverFetchStallInterval)
-			currentFanout += extraSteps * recoverFetchRetryStep
+			currentFanout += recoverSpeculativeFanout + max(0, extraSteps-1)*recoverFetchRetryStep
 		}
 		if currentFanout > len(holders) {
 			currentFanout = len(holders)
@@ -3143,13 +3160,14 @@ func recoverInitialFetchFanout(erasureK int, f int, holderCount int) int {
 	if fanout <= 0 {
 		fanout = 1
 	}
-	if extra := max(4, min(16, f/2)); extra > 0 {
-		fanout += extra
-	}
 	if holderCount > 0 && fanout > holderCount {
 		fanout = holderCount
 	}
 	return fanout
+}
+
+func recoverSpeculativeExtra(f int) int {
+	return max(4, min(16, f/2))
 }
 
 func recoverRetryStep(f int) int {

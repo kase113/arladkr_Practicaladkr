@@ -561,14 +561,14 @@ func TestBoundedQueueSize(t *testing.T) {
 }
 
 func TestRecoverInitialFetchFanout(t *testing.T) {
-	if got := recoverInitialFetchFanout(22, 21, 64); got != 32 {
-		t.Fatalf("fanout n64 mismatch: got %d want 32", got)
+	if got := recoverInitialFetchFanout(22, 21, 64); got != 22 {
+		t.Fatalf("fanout n64 mismatch: got %d want 22", got)
 	}
-	if got := recoverInitialFetchFanout(34, 31, 96); got != 49 {
-		t.Fatalf("fanout n96 mismatch: got %d want 49", got)
+	if got := recoverInitialFetchFanout(34, 31, 96); got != 34 {
+		t.Fatalf("fanout n96 mismatch: got %d want 34", got)
 	}
-	if got := recoverInitialFetchFanout(43, 42, 127); got != 59 {
-		t.Fatalf("fanout n127 mismatch: got %d want 59", got)
+	if got := recoverInitialFetchFanout(43, 42, 127); got != 43 {
+		t.Fatalf("fanout n127 mismatch: got %d want 43", got)
 	}
 }
 
@@ -581,6 +581,15 @@ func TestRecoverRetryStep(t *testing.T) {
 	}
 	if got := recoverRetryStep(42); got != 10 {
 		t.Fatalf("retry step f42 mismatch: got %d want 10", got)
+	}
+}
+
+func TestRecoverSpeculativeExtra(t *testing.T) {
+	if got := recoverSpeculativeExtra(21); got != 10 {
+		t.Fatalf("speculative extra f21 mismatch: got %d want 10", got)
+	}
+	if got := recoverSpeculativeExtra(31); got != 15 {
+		t.Fatalf("speculative extra f31 mismatch: got %d want 15", got)
 	}
 }
 

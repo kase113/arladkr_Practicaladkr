@@ -44,6 +44,10 @@ type compKeyService struct {
 	listeners map[int]net.Listener
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
+	// ready records the one-time transport barrier performed before the
+	// protocol's expensive phases. Later key derivation must not re-probe
+	// listeners that may have already completed and begun teardown.
+	ready bool
 }
 
 func practicalCompAddresses(cfg Config, committee []int) (map[int]string, error) {
@@ -115,15 +119,18 @@ func closeCompServiceAfterGrace(service *compKeyService, ctx context.Context) {
 		return
 	}
 	grace := durationFromEnvMsOr("PRACTICAL_RESPONDER_GRACE_MS", 0)
-	if grace <= 0 || ctx == nil || ctx.Err() != nil {
+	if grace <= 0 {
 		service.close()
 		return
 	}
+	// The caller cancels the per-run context immediately after
+	// RunPracticalADKR returns. Do not let that cancellation shorten this
+	// bounded responder window; runner cleanup remains the outer lifetime
+	// bound.
 	go func() {
-		select {
-		case <-time.After(grace):
-		case <-ctx.Done():
-		}
+		timer := time.NewTimer(grace)
+		defer timer.Stop()
+		<-timer.C
 		service.close()
 	}()
 }
@@ -203,8 +210,11 @@ func runCompKeyDerivationMulticast(
 			return nil, nil, nil, nil, fmt.Errorf("CompProve persistent service missing local node %d", recipient)
 		}
 	}
-	if err := waitCompKeyServiceReady(stageCtx, cfg, newCommittee, service); err != nil {
-		return nil, nil, nil, nil, err
+	if !service.ready {
+		if err := waitCompKeyServiceReady(stageCtx, cfg, newCommittee, service); err != nil {
+			return nil, nil, nil, nil, err
+		}
+		service.ready = true
 	}
 
 	prepared := make(map[int]compKeyWire, len(localIDs))
@@ -279,8 +289,10 @@ func waitCompKeyServiceReady(ctx context.Context, cfg Config, committee []int, s
 	if service == nil || need <= 0 {
 		return errors.New("invalid CompProve readiness configuration")
 	}
-	dialTimeout := durationFromEnvMsOr("PRACTICAL_COMPPROVE_READY_DIAL_TIMEOUT_MS", time.Second)
-	ioTimeout := durationFromEnvMsOr("PRACTICAL_COMPPROVE_READY_IO_TIMEOUT_MS", 2*time.Second)
+	// Readiness is a transport barrier. A wider per-probe window avoids false
+	// negatives when local proc-sim CPU contention delays listener ACKs.
+	dialTimeout := durationFromEnvMsOr("PRACTICAL_COMPPROVE_READY_DIAL_TIMEOUT_MS", 2*time.Second)
+	ioTimeout := durationFromEnvMsOr("PRACTICAL_COMPPROVE_READY_IO_TIMEOUT_MS", 5*time.Second)
 
 	for {
 		ready := 0
@@ -368,13 +380,15 @@ func serveCompKeyWires(ctx context.Context, cfg Config, recipient int, listener 
 			if raw, marshalErr := json.Marshal(&wire); marshalErr == nil {
 				recordRecvBytes(len(raw))
 			}
+			// ACK confirms transport acceptance, not cryptographic validity. Send
+			// it before queueing so a busy collector cannot cause sender retries.
+			_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
+			_ = json.NewEncoder(conn).Encode(compKeyWire{
+				Kind: "key-ack", SID: cfg.SID, Epoch: cfg.Epoch,
+				Sender: wire.Sender, Recipient: recipient,
+			})
 			select {
 			case out <- wire:
-				_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-				_ = json.NewEncoder(conn).Encode(compKeyWire{
-					Kind: "key-ack", SID: cfg.SID, Epoch: cfg.Epoch,
-					Sender: wire.Sender, Recipient: recipient,
-				})
 			case <-ctx.Done():
 			}
 		}

@@ -55,6 +55,19 @@ type DXTBackend struct {
 	externalReceivers bool
 	shareStoreDir     string
 	networkService    *dxtNetworkService
+	// Verification results are immutable for a backend's fixed epoch and key
+	// set. Cache by canonical transcript digest so repeated lane/full checks
+	// from different protocol phases do not redo pairings.
+	verifyCacheMu    sync.RWMutex
+	transcriptVerify map[dxtTranscriptCacheKey]bool
+	laneVerify       map[dxtLaneCacheKey]bool
+}
+
+type dxtTranscriptCacheKey [32]byte
+
+type dxtLaneCacheKey struct {
+	digest dxtTranscriptCacheKey
+	rid    int
 }
 
 func (b *DXTBackend) closeNetworkService() {
@@ -802,6 +815,39 @@ func (b *DXTBackend) Deal(_ context.Context, dealer int, secret *big.Int) (*DXTT
 // VerifyTranscript performs the complete public verification from Algorithm 1.
 // nodeID is retained for API compatibility; verification is transcript-wide.
 func (b *DXTBackend) VerifyTranscript(_ int, transcript *DXTTranscript) bool {
+	key, keyOK := dxtTranscriptCacheKeyFor(transcript)
+	if keyOK {
+		b.verifyCacheMu.RLock()
+		cached, hit := b.transcriptVerify[key]
+		b.verifyCacheMu.RUnlock()
+		if hit {
+			return cached
+		}
+	}
+	valid := b.verifyTranscriptUncached(transcript, key, keyOK)
+	if keyOK {
+		b.verifyCacheMu.Lock()
+		if b.transcriptVerify == nil {
+			b.transcriptVerify = make(map[dxtTranscriptCacheKey]bool)
+		}
+		b.transcriptVerify[key] = valid
+		b.verifyCacheMu.Unlock()
+	}
+	return valid
+}
+
+func dxtTranscriptCacheKeyFor(transcript *DXTTranscript) (dxtTranscriptCacheKey, bool) {
+	if transcript == nil {
+		return dxtTranscriptCacheKey{}, false
+	}
+	raw, err := json.Marshal(transcript)
+	if err != nil {
+		return dxtTranscriptCacheKey{}, false
+	}
+	return dxtTranscriptCacheKey(sha256.Sum256(raw)), true
+}
+
+func (b *DXTBackend) verifyTranscriptUncached(transcript *DXTTranscript, key dxtTranscriptCacheKey, keyOK bool) bool {
 	if !b.validateTranscriptShape(transcript) {
 		return false
 	}
@@ -809,7 +855,7 @@ func (b *DXTBackend) VerifyTranscript(_ int, transcript *DXTTranscript) bool {
 		return false
 	}
 	for _, rid := range b.newCommittee {
-		if !b.verifyTranscriptLane(transcript, rid) {
+		if !b.verifyTranscriptLaneWithKey(transcript, rid, key, keyOK) {
 			return false
 		}
 	}
@@ -872,9 +918,10 @@ func (b *DXTBackend) partialVerifyLanesPrevalidated(nodeID int, transcript *DXTT
 	if !ok {
 		return nil, false
 	}
+	key, keyOK := dxtTranscriptCacheKeyFor(transcript)
 	results := make(map[int]bool, len(ids))
 	for _, rid := range ids {
-		results[rid] = b.verifyTranscriptLane(transcript, rid)
+		results[rid] = b.verifyTranscriptLaneWithKey(transcript, rid, key, keyOK)
 	}
 	return results, true
 }
@@ -925,6 +972,32 @@ func (b *DXTBackend) validateTranscriptShape(transcript *DXTTranscript) bool {
 }
 
 func (b *DXTBackend) verifyTranscriptLane(transcript *DXTTranscript, rid int) bool {
+	key, keyOK := dxtTranscriptCacheKeyFor(transcript)
+	return b.verifyTranscriptLaneWithKey(transcript, rid, key, keyOK)
+}
+
+func (b *DXTBackend) verifyTranscriptLaneWithKey(transcript *DXTTranscript, rid int, key dxtTranscriptCacheKey, keyOK bool) bool {
+	if keyOK {
+		cacheKey := dxtLaneCacheKey{digest: key, rid: rid}
+		b.verifyCacheMu.RLock()
+		cached, hit := b.laneVerify[cacheKey]
+		b.verifyCacheMu.RUnlock()
+		if hit {
+			return cached
+		}
+		valid := b.verifyTranscriptLaneUncached(transcript, rid)
+		b.verifyCacheMu.Lock()
+		if b.laneVerify == nil {
+			b.laneVerify = make(map[dxtLaneCacheKey]bool)
+		}
+		b.laneVerify[cacheKey] = valid
+		b.verifyCacheMu.Unlock()
+		return valid
+	}
+	return b.verifyTranscriptLaneUncached(transcript, rid)
+}
+
+func (b *DXTBackend) verifyTranscriptLaneUncached(transcript *DXTTranscript, rid int) bool {
 	commitment := transcript.Commitments[rid]
 	if sig, ok := transcript.Signatures[rid]; ok {
 		return verifyAck(b.recipientSignPub[rid], transcript.Dealer, rid, commitment, sig)

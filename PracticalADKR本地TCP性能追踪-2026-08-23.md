@@ -973,3 +973,120 @@ descriptor 尚未齐全时，按完整 ReadyCert wire digest 丢弃相同重复�
 单一 consensus hash。该阶段主要减少 exact retry 的重复 BLS pairing，不改变 wire、recipient、threshold 或安全
 predicate；通信差异受本机重试/时序影响，不能据单轮结果归因。原始目录：
 `/tmp/arladkr-n16-stage-20260827-validation-signature-wire-dedupe/`。
+
+### PracticalADKR recovery 首波 k + 延迟 speculative fanout（2026-08-28）
+
+实现：recovery 首次 fetch 只向 `erasureK` 个 holder 请求；在 `PRACTICAL_RECOVER_FETCH_STALL_MS`
+（默认 1 s）后才补发 speculative `delta`（默认 `max(4,min(16,f/2))`），后续 stall 再按 retry step
+扩大。达到每个 dealer 的 recipient recovery 条件后，已有 recovery `stop` context 会取消尚未完成的
+发送和 late response。可用 `PRACTICAL_RECOVER_SPECULATIVE_EXTRA` 调整 delta；该路径不改变
+APDB/RS threshold、holder attestation、Merkle proof 或最终 transcript predicate。
+
+本轮单元测试验证首波 fanout 与 speculative delta 计算通过。尝试 n=7 严格本地 TCP 未形成有效样本：
+多个节点在 recovery 之前的 partial verification/CompProve 阶段超时（仅收到 2/5 shares），因此不记录
+latency 或通信量；运行已停止并清理残余进程。此前有效的 n=7 基线仍为 online `2.029 s`、sent-only
+`0.455 MB/node`、recovery sent-only `0.081 MB/node`，不能将本次 invalid run 与其比较。
+
+### PracticalADKR CompKey aggregate statement cache（2026-08-28）
+
+实现：`collectCompKeyWires` 按 `CompPublicKeyShare.NodeID` 惰性缓存
+`compAggregateStatement` 的 aggregate/x/c1Product；同一 sender 的重复或重传 share 不再重复执行
+`O(|selected|)` 点聚合。每份 share 仍执行原有 relation、DLog、DH proof 和 binding 验证；不改变
+论文协议、threshold、wire 或安全 predicate。
+
+| n/f | 完成 / quorum | online | sent/node | recovery sent/node |
+| ---: | --- | ---: | ---: | ---: |
+| 7/2 | 7/7 / 5 | 2.029 s | 0.455 MB | 0.081 MB |
+
+7 个节点 consensus hash 一致，`timeout=0`、`fallback=0`。原始目录：
+`deployment/docker-artifacts/aggregate-cache-n7-20260828/`。
+
+一次 n=16 复测未形成有效样本：本机资源竞争导致 partial verification/CompProve 在达到
+threshold 前超时（最多仅收到 6/11 shares），所有节点 `success_rate=0`，不纳入性能比较。
+
+### 最新二进制：partial cache + recovery speculative fanout quorum 验证（2026-08-28）
+
+先使用 `go build -buildvcs=false -trimpath` 重建 `bin/bench_latency`，再运行严格本地 TCP
+`n=7,f=2,kappa=3`，`PRACTICAL_DXT_VERIFY_WORKERS=2`、`cpu-oversubscribe=1.0`。7 个进程中
+5 个成功，达到 quorum=5；2 个在 CompProve readiness 阶段失败，不纳入平均值。按 5 个成功节点
+计算：
+
+| 完成 / quorum | latency | setup | online（去 setup） | sent/node | recovery sent/node |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 5/7 / 5 | 7.352 s | 5.194 s | 2.156 s | 0.459 MB | 0.077 MB |
+
+5 个成功节点无 timeout/fallback，consensus hash 一致；结果目录：
+`deployment/docker-artifacts/latest-opt-n7-20260828/`。runner 后续为避免等待失败节点超时而人工
+中止，但 quorum 数据已经独立收集并符合本项目的 quorum 统计口径。
+
+### transcript/lane digest cache n=7（2026-08-28）
+
+在最新 `bench_latency` 上启用 backend 级 canonical transcript digest cache：完整 transcript 验证和
+每个 lane 验证均按 digest 缓存，重复阶段/多 verifier 不重复执行 encrypted-DLog/EC 检查；对象内容
+变化会产生新 digest，首次验证和全部安全检查不跳过。条件为严格本地 TCP、`n=7,f=2,kappa=3`、
+`PRACTICAL_DXT_VERIFY_WORKERS=2`、`cpu-oversubscribe=1.0`。
+
+| 完成 / quorum | latency | setup | online（去 setup） | partial verify | recovery | aggregate derive | sent/node | recovery sent/node |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 7/7 / 5 | 8.034 s | 6.694 s | 1.340 s | 0.013 s | 0.588 s | 0.691 s | 0.455 MB | 0.079 MB |
+
+7 个节点 `timeout=0`、`fallback=0`，consensus hash 一致。相较此前无 digest cache 的有效 n=7
+（online 约 `2.029 s`），partial verification 和 aggregate derive 均明显下降；总 latency 受
+本地 setup CPU 影响。原始目录：`deployment/docker-artifacts/transcript-cache-n7-20260828/`。
+
+### transcript/lane digest cache n=16（2026-08-28）
+
+条件：严格本地 TCP、`n=16,f=5,kappa=6`、`PRACTICAL_DXT_VERIFY_WORKERS=2`、
+`cpu-oversubscribe=1.0`。16 个进程中 14 个成功，达到 quorum=11；2 个在 recovery completion
+阶段超时（`completions=2/11`），不纳入平均值。14 个成功节点平均：
+
+| 完成 / quorum | latency | setup | online（去 setup） | partial verify | recovery | aggregate derive | sent/node | recovery sent/node |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 14/16 / 11 | 17.431 s | 13.788 s | 3.609 s | 0.108 s | 2.064 s | 2.412 s | 3.387 MB | 0.456 MB |
+
+14 个成功节点无 timeout/fallback 且 consensus hash 一致。此前同条件旧基线 online 约 `6.749 s`、
+sent `3.496 MB/node`、recovery sent `0.558 MB/node`；本轮 online 约下降 `46.5%`，recovery
+发送量下降约 `18.3%`。原始目录：`deployment/docker-artifacts/transcript-cache-n16-20260828/`。
+
+### CompProve readiness 窗口修复与复测（2026-08-28）
+
+针对本地 proc-sim 在 CPU 竞争下的 readiness 误判，将 CompProve ready probe 默认拨号窗口从
+`1 s`/I/O `2 s` 调整为 `2 s`/`5 s`，仍要求 `n-f` 个可达节点，协议消息和安全阈值不变。定向
+CompProve 测试通过；使用最新二进制运行 n=7 后，仍有 4 个节点在后续 partial verification
+阶段超时，说明主要问题不是 readiness probe，而是 proc-sim 跨进程 partial-result 投递和本机调度
+竞争。该复测没有 recovery 性能数据，不纳入 latency 或通信量比较。
+
+同日 recovery fanout 复测在 `PRACTICAL_DXT_VERIFY_WORKERS=2`、`start-delay=30s` 两种条件下各
+尝试一次 n=7。两次均在 recovery 之前的 partial verification 阶段报告
+`partial verification result multicast timeout`，没有有效 latency 或通信量样本；该结果只说明
+当前 proc-sim 前置活性/资源问题仍存在，不能归因于 speculative recovery fanout。
+
+### partial verification duplicate-result cache（2026-08-28）
+
+实现：缓存每个 verifier 的 expected lane 集合，并在同一 `(dealer, verifier)` 的完整 lane 结果已经
+接受后，提前丢弃重传 wire，避免重复执行 ECDSA 验证和 lane-shape map 构造。首次结果仍执行完整
+签名、digest、lane coverage 与重复 lane 检查，不改变论文中的 `f+1` 正票阈值或安全 predicate。
+
+定向 `go test ./core -run 'Test(Partial|CompKey|PracticalADKR)'` 通过。随后尝试本地严格 TCP
+`n=4,f=1,kappa=2`，但 partial verification 仍发生 timeout，CompProve 仅收到部分 share；该运行
+没有有效协议结果，不记录 latency/通信量。当前 proc-sim 的前置活性问题需要单独修复后，才能评估
+此缓存对端到端延迟的实际收益。
+
+### n=16 completion barrier / responder 修复复测（2026-08-28）
+
+| 项目 | 设置 |
+| --- | --- |
+| 网络与规模 | 严格本地 TCP，`n=16,f=5,kappa=6`，单轮，16 个进程 |
+| 资源 | `PRACTICAL_DXT_VERIFY_WORKERS=2`，`cpu-oversubscribe=1.0` |
+| 启动与 responder | 统一 `PRACTICAL_START_AT_UNIX`，`start-delay=20s`，`PRACTICAL_RESPONDER_GRACE_MS=180000` |
+| completion barrier | `PRACTICAL_RECOVER_COMPLETION_WAIT_MS=0`（默认关闭） |
+| 主通信量 | sent-only；recovery sent-only 不含 key-share |
+
+| 统计集 | 完成 / quorum | online 平均 | quorum online 截止 | raw latency 平均 / 截止 | sent/node | recovery sent/node |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| quorum 前 11 个节点 | 11/11 / 11 | 3.531 s | 3.569 s | 16.112 / 16.127 s | 3.420 MB | 0.492 MB |
+| 全部成功节点 | 16/16 / 11 | 6.313 s | - | 18.905 s | 3.343 MB | 0.475 MB |
+
+16 个节点 `timeout=0`、`fallback=0`，consensus hash 唯一；node-11 的 online 为 `47.746 s`，
+其余节点约 `3.48--3.64 s`。setup 平均 `12.592 s`，不计入 online。前一轮的两个 readiness
+失败节点已消失；该轮原始目录为 `deployment/docker-artifacts/completion-opt-n16-20260828b/`。

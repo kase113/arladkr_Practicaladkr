@@ -29,9 +29,7 @@ const (
 )
 
 // practicalSigningKeySet separates committee-wide verification material from
-// process-local signing/decryption material. The deterministic key generator
-// is benchmark setup only; production deployments must import an equivalent
-// public bundle and provision each private key directly to its owner.
+// process-local signing/decryption material.
 type practicalSigningKeySet struct {
 	dealerECDSAPublic  map[int]*ecdsa.PublicKey
 	dealerECDSAPrivate map[int]*ecdsa.PrivateKey

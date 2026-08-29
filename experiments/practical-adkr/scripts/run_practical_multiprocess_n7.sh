@@ -5,8 +5,7 @@ set -euo pipefail
 # Trusted setup is generated once before timing. Each process receives the
 # common public bundle and only its own signing, decryption, and coin shares.
 
-# The historical filename is retained for compatibility.  Override these
-# values for a matched committee experiment, e.g. n=16/f=5/kappa=6.
+# Override these values for a matched committee experiment, e.g. n=16/f=5/kappa=6.
 N="${PRACTICAL_MP_N:-7}"
 F="${PRACTICAL_MP_F:-2}"
 KAPPA="${PRACTICAL_MP_KAPPA:-3}"
@@ -14,7 +13,9 @@ PORT_BASE="${PRACTICAL_MP_PORT_BASE:-23000}"
 MVBA_PORT_BASE="${PRACTICAL_MP_MVBA_PORT_BASE:-${PORT_BASE}}"
 PROTO_PORT_BASE="${PRACTICAL_MP_PROTO_PORT_BASE:-$((PORT_BASE + 1000))}"
 COIN_PORT_BASE="${PRACTICAL_MP_COIN_PORT_BASE:-$((PORT_BASE - 5000))}"
-if (( MVBA_PORT_BASE <= 0 || PROTO_PORT_BASE <= 0 || COIN_PORT_BASE <= 0 )); then
+COMP_PORT_BASE="${PRACTICAL_MP_COMP_PORT_BASE:-$((PORT_BASE - 12000))}"
+PARTIAL_PORT_BASE="${PRACTICAL_MP_PARTIAL_PORT_BASE:-$((PORT_BASE - 9000))}"
+if (( MVBA_PORT_BASE <= 0 || PROTO_PORT_BASE <= 0 || COIN_PORT_BASE <= 0 || COMP_PORT_BASE <= 0 || PARTIAL_PORT_BASE <= 0 )); then
   printf 'invalid port base configuration\n' >&2
   exit 2
 fi
@@ -69,6 +70,8 @@ fi
 mvba_addrs=""
 proto_addrs=""
 coin_addrs=""
+comp_addrs=""
+partial_addrs=""
 for id in $(seq 0 $((N - 1))); do
   [[ -z "${mvba_addrs}" ]] || mvba_addrs+=","
   mvba_addrs+="${id}=127.0.0.1:$((MVBA_PORT_BASE + id))"
@@ -78,13 +81,17 @@ for id in $(seq 0 $((N - 1))); do
 	coin_addrs+="${id}=127.0.0.1:$((COIN_PORT_BASE + id))"
 done
 for id in $(seq 0 $((N - 1))); do
-  new_id=$((N + id))
-  proto_addrs+=",${new_id}=127.0.0.1:$((PROTO_PORT_BASE + new_id))"
+	new_id=$((N + id))
+	proto_addrs+=",${new_id}=127.0.0.1:$((PROTO_PORT_BASE + new_id))"
+	[[ -z "${comp_addrs}" ]] || comp_addrs+=","
+	comp_addrs+="${new_id}=127.0.0.1:$((COMP_PORT_BASE + new_id))"
+	[[ -z "${partial_addrs}" ]] || partial_addrs+=","
+	partial_addrs+="${new_id}=127.0.0.1:$((PARTIAL_PORT_BASE + new_id))"
 done
 
 # Hold every node at one wall-clock start so spawn skew does not compress the
 # slowest nodes' readiness windows on a shared host. Unset the variable to keep
-# the historical immediate start.
+# immediate start.
 PRACTICAL_START_AT_UNIX="${PRACTICAL_START_AT_UNIX:-$(( $(date +%s) + 8 ))}"
 export PRACTICAL_START_AT_UNIX
 PRACTICAL_RECAST_PORT_OFFSET="${PRACTICAL_RECAST_PORT_OFFSET:-3000}"
@@ -97,7 +104,6 @@ for id in $(seq 0 $((N - 1))); do
   PRACTICAL_SETUP_READ_ONLY=1 \
   PRACTICAL_LOCAL_STATE_DIR="${RUN_DIR}/local/node-${id}" \
   "${epoch_barrier_env[@]}" \
-  RLADKR_RANDOM_SEED="${RLADKR_RANDOM_SEED:-practical-adkr-multiprocess-n${N}}" \
   PRACTICAL_STRICT_NETWORK=1 \
   "${BIN}" \
     -n "${N}" -f "${F}" -kappa "${KAPPA}" -runs "${PRACTICAL_MP_RUNS:-1}" \
@@ -107,7 +113,8 @@ for id in $(seq 0 $((N - 1))); do
     -mvba-addrs "${mvba_addrs}" -mvba-local-ids "${id}" \
 	-proto-addrs "${proto_addrs}" -proto-local-ids "${id},$((N + id))" \
 	-coin-addrs "${coin_addrs}" \
-    -strict-network=true -comm-metrics=true \
+	-comp-addrs "${comp_addrs}" -partial-verify-addrs "${partial_addrs}" \
+	-comm-metrics=true \
     >"${log}" 2>&1 &
   pids+=("$!")
 done

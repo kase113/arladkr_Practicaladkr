@@ -527,7 +527,7 @@ func (b *DXTBackend) Deal(_ context.Context, dealer int, secret *big.Int) (*DXTT
 	localIDs := parseNodeIDSet(b.protoLocalNodeIDs)
 	netEnabled := len(addrMap) > 0 && len(localIDs) > 0
 	// In strict mode only the receiver service may persist plaintext ACK aux.
-	// Local compatibility mode may still use the colocated dealer result.
+	// Strict mode uses the receiver service for acknowledgements.
 	if !b.strictNetwork {
 		for rid := range localIDs {
 			if share, ok := shares[rid]; ok {
@@ -627,13 +627,7 @@ func (b *DXTBackend) Deal(_ context.Context, dealer int, secret *big.Int) (*DXTT
 			}
 
 			deadline := time.NewTimer(timeout)
-			// Paper good-case optimization (Fig. 4c): once the ack threshold
-			// is met, keep collecting for a bounded delta so slow-but-honest
-			// recipients still land in the transcript instead of paying
-			// straggler costs in later phases. The paper uses delta=1s at
-			// n=127/196 and 2s at n=56; PRACTICAL_DEALING_DELTA_MS=0
-			// (default) keeps the legacy proceed-at-threshold behavior, and
-			// the overall deadline still caps the extra window.
+			// Optionally collect acknowledgements briefly after reaching the threshold.
 			dealingDelta := durationFromEnvMsOr("PRACTICAL_DEALING_DELTA_MS", 0)
 			var deltaDone <-chan time.Time
 		collectAcks:
@@ -703,8 +697,7 @@ func (b *DXTBackend) Deal(_ context.Context, dealer int, secret *big.Int) (*DXTT
 		if b.strictNetwork {
 			return nil, nil, errors.New("strict-network rejects DXT local ack synthesis after incomplete network acks")
 		}
-		// Robust local fallback: if network ack collection is incomplete,
-		// synthesize verifiable local acks from available recipient signing keys.
+		// Complete the transcript from verifiable local acknowledgements.
 		for _, rid := range b.newCommittee {
 			if _, exists := acks[rid]; exists {
 				continue
@@ -813,7 +806,7 @@ func (b *DXTBackend) Deal(_ context.Context, dealer int, secret *big.Int) (*DXTT
 }
 
 // VerifyTranscript performs the complete public verification from Algorithm 1.
-// nodeID is retained for API compatibility; verification is transcript-wide.
+// Verification is transcript-wide.
 func (b *DXTBackend) VerifyTranscript(_ int, transcript *DXTTranscript) bool {
 	key, keyOK := dxtTranscriptCacheKeyFor(transcript)
 	if keyOK {
@@ -879,7 +872,7 @@ func (b *DXTBackend) PartialVerify(nodeID int, transcript *DXTTranscript) bool {
 
 // partialLaneIDs returns the deterministic 2f+1-lane responsibility window
 // for a verifier. New-committee IDs are the protocol actors after RC; old IDs
-// remain accepted for legacy direct PartialVerify tests.
+// remain accepted for direct PartialVerify tests.
 func (b *DXTBackend) partialLaneIDs(nodeID int) ([]int, bool) {
 	n := len(b.newCommittee)
 	nodeIdx, ok := b.oldIndex[nodeID]
@@ -1374,9 +1367,7 @@ func commitSharePair(curve elliptic.Curve, s, r *big.Int) []byte {
 }
 
 func hashToPoint(curve elliptic.Curve) (*big.Int, *big.Int) {
-	// Deterministic public-input hash-and-try. There is deliberately no
-	// known-discrete-log fallback: returning g^x for a public x would violate
-	// the independent-generator assumption used by the Pedersen commitments.
+	// Derive the second Pedersen generator by hash-and-try.
 	for i := uint64(0); ; i++ {
 		h := sha256.New()
 		h.Write([]byte("PADKR-PEDERSEN-H"))

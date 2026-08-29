@@ -89,7 +89,7 @@ func TestLocalSigningSetupRetainsAllPrivateKeys(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(keys.dealerECDSAPrivate) != len(oldCommittee) || len(keys.oldEdPrivate) != len(oldCommittee) || len(keys.recipientPrivate) != len(newCommittee) {
-		t.Fatalf("local compatibility setup lost private keys: dealer=%d old_ed=%d recipient=%d",
+		t.Fatalf("local setup lost private keys: dealer=%d old_ed=%d recipient=%d",
 			len(keys.dealerECDSAPrivate), len(keys.oldEdPrivate), len(keys.recipientPrivate))
 	}
 }

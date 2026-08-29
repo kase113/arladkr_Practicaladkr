@@ -360,10 +360,7 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 	compService.ready = true
 	partialVerifyService, err := startPartialVerifyService(ctx, cfg, newC)
 	if err != nil {
-		if cfg.StrictNetwork {
-			return failWithPartial(err, "setup")
-		}
-		tracef("phase=setup_partial_verify_service_unavailable err=%v", err)
+		return failWithPartial(err, "setup")
 	}
 	defer partialVerifyService.close()
 
@@ -386,13 +383,11 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 		return failWithPartial(err, "setup")
 	}
 	var coinService *thresholdCoinService
-	if cfg.StrictNetwork || len(coinKeys.privateShare) != len(old) {
-		coinService, err = startThresholdCoinService(ctx, cfg, old, coinKeys.privateShare)
-		if err != nil {
-			return failWithPartial(err, "setup")
-		}
-		defer coinService.close()
+	coinService, err = startThresholdCoinService(ctx, cfg, old, coinKeys.privateShare)
+	if err != nil {
+		return failWithPartial(err, "setup")
 	}
+	defer coinService.close()
 	dxt.strictNetwork = cfg.StrictNetwork
 	markPhase("setup", setupStart)
 	tracef("phase=setup_end ms=%.2f", float64(time.Since(setupStart).Microseconds())/1000.0)
@@ -419,14 +414,11 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 	apdbStart := time.Now()
 	setCommPhase("apdb_dispersal")
 	tracef("phase=apdb_begin")
-	var apdbService *networkAPDBService
-	if cfg.StrictNetwork {
-		apdbService, err = startNetworkAPDBService(ctx, cfg, old, transcripts, dealerEDPriv, dealerEDPub, dxt, coinKeys)
-		if err != nil {
-			return failWithPartial(err, "apdb_dispersal")
-		}
-		defer apdbService.close()
+	apdbService, err := startNetworkAPDBService(ctx, cfg, old, transcripts, dealerEDPriv, dealerEDPub, dxt, coinKeys)
+	if err != nil {
+		return failWithPartial(err, "apdb_dispersal")
 	}
+	defer apdbService.close()
 	// Success-first benchmark path:
 	// prefer local APDB aggregation for liveness; if it still yields no valid set,
 	// fall back to deterministic full-dealer validity to keep experiments complete.
@@ -442,51 +434,7 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 		}
 	}
 	if err != nil || allLocalValidEmpty(localValid) {
-		if cfg.StrictNetwork {
-			return failWithPartial(fmt.Errorf("strict-network rejects APDB fallback: err=%v empty=%v", err, allLocalValidEmpty(localValid)), "apdb_dispersal")
-		}
-		tracef("phase=apdb_fallback err=%v empty=%v", err, allLocalValidEmpty(localValid))
-		localValid = make(map[int][]int, len(old))
-		for _, nodeID := range old {
-			localValid[nodeID] = append([]int(nil), old...)
-		}
-		apdbCerts = make(map[int]APDBCertificate)
-		for _, dealer := range old {
-			tr := transcripts[dealer]
-			if tr == nil {
-				continue
-			}
-			raw, mErr := json.Marshal(tr)
-			if mErr != nil {
-				continue
-			}
-			root := sha256.Sum256(raw)
-			receipts := make([]APDBReceipt, 0, len(old))
-			for _, nodeID := range old {
-				if err := persistAPDBTranscript(cfg, old, nodeID, dealer, root[:], raw); err != nil {
-					continue
-				}
-				chunkHash := hashChunk(root[:], dealer, nodeID, raw)
-				msg := hashReceiptMsg(dealer, nodeID, root[:], chunkHash)
-				sig := ed25519.Sign(dealerEDPriv[nodeID], msg)
-				receipts = append(receipts, APDBReceipt{
-					NodeID:    nodeID,
-					Sender:    dealer,
-					ChunkHash: chunkHash,
-					Signature: sig,
-				})
-			}
-			sort.Slice(receipts, func(i, j int) bool { return receipts[i].NodeID < receipts[j].NodeID })
-			thresholdCert := apdbCertificateThreshold(cfg.F, len(receipts))
-			apdbCerts[dealer] = APDBCertificate{
-				Sender:   dealer,
-				Root:     append([]byte(nil), root[:]...),
-				Receipts: append([]APDBReceipt(nil), receipts[:thresholdCert]...),
-			}
-		}
-	}
-	if !cfg.StrictNetwork {
-		apdbCerts = fillMissingAPDBCertificates(cfg, old, old, transcripts, dealerEDPriv, apdbCerts)
+		return failWithPartial(fmt.Errorf("network APDB dispersal failed: err=%v empty=%v", err, allLocalValidEmpty(localValid)), "apdb_dispersal")
 	}
 
 	required := apdbFinishedSetThreshold(cfg.F, len(old))
@@ -523,28 +471,18 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 			apdbCerts[dealer] = certificate
 		}
 	}
-	agreementFallback := false
 	if mvbaErr != nil || len(decidedSet) == 0 {
-		tracef("phase=mvba_fail err=%v decided=%d fallback_disabled=%v", mvbaErr, len(decidedSet), cfg.DisableAgreementFallback)
-		if cfg.DisableAgreementFallback {
-			if mvbaErr != nil {
-				return failWithPartial(fmt.Errorf("dumbo-mvba agreement failed: %w", mvbaErr), "mvba_agree")
-			}
-			return failWithPartial(fmt.Errorf("dumbo-mvba agreement returned empty dealer set"), "mvba_agree")
+		if mvbaErr != nil {
+			return failWithPartial(fmt.Errorf("dumbo-mvba agreement failed: %w", mvbaErr), "mvba_agree")
 		}
-		// Fallback: local-only quorum decision (same-process nodes)
-		agreementFallback = true
-		decidedSet = localQuorumDealerSet(proposals, old, cfg.F)
-		if len(decidedSet) == 0 {
-			return failWithPartial(fmt.Errorf("mvba+local quorum both empty: mvbaErr=%v", mvbaErr), "mvba_agree")
-		}
+		return failWithPartial(fmt.Errorf("dumbo-mvba agreement returned empty dealer set"), "mvba_agree")
 	}
 	markPhase("mvba_agree", mvbaStart)
 	phaseTimings["mvba_peer_wait"] += mvbaBreakdown.PeerWait
 	if mvbaBreakdown.Wall > mvbaBreakdown.PeerWait {
 		phaseTimings["mvba_active_known"] += mvbaBreakdown.Wall - mvbaBreakdown.PeerWait
 	}
-	tracef("phase=mvba_end ms=%.2f decided=%d fallback=%v", float64(time.Since(mvbaStart).Microseconds())/1000.0, len(decidedSet), agreementFallback)
+	tracef("phase=mvba_end ms=%.2f decided=%d", float64(time.Since(mvbaStart).Microseconds())/1000.0, len(decidedSet))
 	// MVBA payloads carry the exact APDB certificates. Once agreement has
 	// completed, no later phase reuses the old-node protocol ports for APDB.
 	if apdbService != nil {
@@ -601,44 +539,15 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 	setCommPhase("partial_verify")
 	tracef("phase=verify_begin actor=new-committee")
 	verifiedSelected := make([]int, 0, len(selectedIDs))
-	partialVerifyMode := "result-multicast"
 	partialVerifyPositiveVotes := make(map[string]int)
-	if strings.EqualFold(strings.TrimSpace(cfg.AblationMode), "no-partial-verify") {
-		if cfg.StrictNetwork {
-			return failWithPartial(errors.New("strict-network rejects no-partial-verify ablation"), "partial_verify")
-		}
-		verifiedSelected = append([]int(nil), selectedIDs...)
-		partialVerifyMode = "no-partial-verify"
-	} else if strings.EqualFold(strings.TrimSpace(cfg.AblationMode), "full-local-verify") {
-		if cfg.StrictNetwork {
-			return failWithPartial(errors.New("strict-network rejects full-local-verify ablation"), "partial_verify")
-		}
-		partialVerifyMode = "full-local-verify"
-		for _, dealer := range selectedIDs {
-			if dxt.VerifyTranscript(0, recoveredTranscripts[dealer]) {
-				verifiedSelected = append(verifiedSelected, dealer)
-			}
-		}
-	} else {
-		verified, positiveVotes, multicastErr := runPartialVerificationMulticast(
-			ctx, cfg, newC, selectedIDs, recoveredTranscripts, partialVerifyService, dxt, tracef,
-		)
-		if multicastErr != nil {
-			if cfg.StrictNetwork {
-				return failWithPartial(multicastErr, "partial_verify")
-			}
-			tracef("phase=partial_verify_multicast_fallback err=%v", multicastErr)
-			partialVerifyMode = "full-local-fallback"
-			for _, dealer := range selectedIDs {
-				if dxt.VerifyTranscript(0, recoveredTranscripts[dealer]) {
-					verifiedSelected = append(verifiedSelected, dealer)
-				}
-			}
-		} else {
-			verifiedSelected = verified
-			partialVerifyPositiveVotes = positiveVotes
-		}
+	verified, positiveVotes, multicastErr := runPartialVerificationMulticast(
+		ctx, cfg, newC, selectedIDs, recoveredTranscripts, partialVerifyService, dxt, tracef,
+	)
+	if multicastErr != nil {
+		return failWithPartial(multicastErr, "partial_verify")
 	}
+	verifiedSelected = verified
+	partialVerifyPositiveVotes = positiveVotes
 	if len(verifiedSelected) != len(selectedIDs) {
 		return failWithPartial(fmt.Errorf("selected transcript verification failed after RC: valid=%d selected=%d", len(verifiedSelected), len(selectedIDs)), "partial_verify")
 	}
@@ -696,9 +605,7 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 		DecidedSet:                    decidedSet,
 		SelectedTranscripts:           verifiedSelected,
 		RecoveredTranscripts:          recoveredTranscripts,
-		AgreementMode:                 agreementModeName(agreementFallback),
-		AgreementFallback:             agreementFallback,
-		AblationMode:                  strings.ToLower(strings.TrimSpace(cfg.AblationMode)),
+		AgreementMode:                 "dumbomvba-go-spbc",
 		SelectedCount:                 len(selectedIDs),
 		VerifiedCount:                 len(verifiedSelected),
 		NewShares:                     newShares,
@@ -715,7 +622,7 @@ func RunPracticalADKR(ctx context.Context, cfg Config) (*Result, error) {
 		TotalRecvBytes:                totalRecvBytes,
 		PhaseSentBytes:                phaseSentBytes,
 		PhaseRecvBytes:                phaseRecvBytes,
-		PartialVerifyMode:             partialVerifyMode,
+		PartialVerifyMode:             "result-multicast",
 		PartialVerifyPositiveVotes:    partialVerifyPositiveVotes,
 	}, nil
 }
@@ -949,21 +856,20 @@ func recastListenerReady(
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
 	wire := recastWire{Kind: "ready", SID: cfg.SID, Epoch: cfg.Epoch, Holder: target}
-	body, err := json.Marshal(wire)
+	body, err := marshalRecastNetworkWire(wire)
 	if err != nil {
 		return false
 	}
-	if err := json.NewEncoder(conn).Encode(wire); err != nil {
+	if _, err := conn.Write(body); err != nil {
 		return false
 	}
-	recordSentBytes(len(body) + 1)
+	recordSentBytes(len(body))
 	var ack recastWire
-	if err := json.NewDecoder(conn).Decode(&ack); err != nil {
+	ackBytes, err := readRecastNetworkWire(conn, &ack)
+	if err != nil {
 		return false
 	}
-	if ackBody, err := json.Marshal(ack); err == nil {
-		recordRecvBytes(len(ackBody) + 1)
-	}
+	recordRecvBytes(ackBytes)
 	return ack.Kind == "ready_ack" && ack.SID == cfg.SID && ack.Epoch == cfg.Epoch && ack.Holder == target
 }
 
@@ -972,15 +878,15 @@ func respondRecastReady(conn net.Conn, cfg Config, localID int, wire recastWire)
 		return false
 	}
 	ack := recastWire{Kind: "ready_ack", SID: cfg.SID, Epoch: cfg.Epoch, Holder: localID}
-	body, err := json.Marshal(ack)
+	body, err := marshalRecastNetworkWire(ack)
 	if err != nil {
 		return false
 	}
 	_ = conn.SetWriteDeadline(time.Now().Add(500 * time.Millisecond))
-	if err := json.NewEncoder(conn).Encode(ack); err != nil {
+	if _, err := conn.Write(body); err != nil {
 		return false
 	}
-	recordSentBytes(len(body) + 1)
+	recordSentBytes(len(body))
 	return true
 }
 
@@ -1136,34 +1042,7 @@ func runRecastRecovery(
 	}
 	localSet := parseNodeIDSet(cfg.ProtocolLocalNodeIDs)
 	if len(addrMap) == 0 || len(localSet) == 0 {
-		// Keep local compatibility path if protocol transport is absent.
-		out := make(map[int]*DXTTranscript, len(selectedIDs))
-		for _, dealer := range selectedIDs {
-			if tr := transcripts[dealer]; tr != nil {
-				out[dealer] = tr
-			}
-		}
-		return out, RecoverTimingBreakdown{}, nil
-	}
-	if !cfg.StrictNetwork {
-		completeRS := true
-		for _, dealer := range selectedIDs {
-			cert := apdbCerts[dealer]
-			if len(cert.ValueDigest) != sha256.Size || len(cert.MerkleRoot) != sha256.Size ||
-				cert.DataShards <= 0 || cert.TotalShards != len(old) {
-				completeRS = false
-				break
-			}
-		}
-		if !completeRS {
-			out := make(map[int]*DXTTranscript, len(selectedIDs))
-			for _, dealer := range selectedIDs {
-				if tr := transcripts[dealer]; tr != nil {
-					out[dealer] = tr
-				}
-			}
-			return out, RecoverTimingBreakdown{}, nil
-		}
+		return nil, RecoverTimingBreakdown{}, errors.New("strict-network recovery requires protocol addresses and local identities")
 	}
 	timing := RecoverTimingBreakdown{}
 
@@ -1608,7 +1487,7 @@ func runRecastRecovery(
 	// In proc-sim, each process hosts a subset of new-committee nodes. A dealer
 	// is considered recovered for this process only after all locally hosted new
 	// recipients have completed the fetch/receive path for that dealer. This is
-	// stricter than the previous process-local shortcut (recipient=1), while
+	// Require a complete authenticated store binding for each recipient.
 	// still matching the one-process-per-node deployment model.
 	requiredRecipients := 0
 	for _, recipient := range newC {
@@ -2259,10 +2138,11 @@ func validateConfig(cfg Config) error {
 	if cfg.Kappa < 0 || cfg.Kappa > 2*cfg.F+1 {
 		return errors.New("kappa must be in [0, 2f+1]")
 	}
-	if cfg.StrictNetwork {
-		if err := validateStrictNetworkConfig(cfg); err != nil {
-			return err
-		}
+	if !cfg.StrictNetwork {
+		return errors.New("PracticalADKR supports only strict TCP network mode")
+	}
+	if err := validateStrictNetworkConfig(cfg); err != nil {
+		return err
 	}
 	return nil
 }
@@ -2285,9 +2165,6 @@ func validateStrictNetworkConfig(cfg Config) error {
 	}
 	if strings.TrimSpace(cfg.CoinNodeAddrs) == "" {
 		return errors.New("strict-network requires dedicated threshold coin node addresses")
-	}
-	if !cfg.DisableAgreementFallback {
-		return errors.New("strict-network requires disabled agreement fallback")
 	}
 	if strings.TrimSpace(os.Getenv("PRACTICAL_DXT_FAST_LOCAL_ACKS")) == "1" {
 		return errors.New("strict-network rejects PRACTICAL_DXT_FAST_LOCAL_ACKS")
@@ -2349,19 +2226,11 @@ func boundedMVBAContext(parent context.Context) (context.Context, context.Cancel
 	return context.WithTimeout(parent, 30*time.Second)
 }
 
-func agreementModeName(fallback bool) string {
-	if fallback {
-		return "local-quorum-fallback"
-	}
-	return "dumbomvba-go-spbc"
-}
-
 func boundedAPDBContext(parent context.Context) (context.Context, context.CancelFunc) {
 	if dl, ok := parent.Deadline(); ok {
 		remaining := time.Until(dl)
 		if remaining > 0 {
-			// The previous 4s cap is too tight once node count grows. APDB is
-			// still a setup-side subphase, but it should not time out so early that
+			// APDB is a setup-side subphase, but it should not time out so early that
 			// it starves the subsequent agreement path of valid proposals.
 			apdbTO := remaining / 3
 			if apdbTO < 2*time.Second {
@@ -2423,84 +2292,12 @@ func loadOrComputeDXTCache(
 	}
 	cacheDir := strings.TrimSpace(os.Getenv("PRACTICAL_ARTIFACT_CACHE_DIR"))
 	if cacheDir == "" {
-		if cfg.StrictNetwork {
-			return nil, nil, nil, fmt.Errorf("strict-network requires PRACTICAL_ARTIFACT_CACHE_DIR for distributed DXT cache")
-		}
-		buildStart := time.Now()
-		transcripts, allShares, err := computeAllDXT(ctx, old, dxt, tracef)
-		cacheTimings["dxt_cache_build"] += time.Since(buildStart)
-		return transcripts, allShares, cacheTimings, err
+		return nil, nil, nil, fmt.Errorf("strict-network requires PRACTICAL_ARTIFACT_CACHE_DIR for distributed DXT cache")
 	}
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, nil, nil, fmt.Errorf("create practical cache dir: %w", err)
 	}
-	if cfg.StrictNetwork {
-		return loadOrComputeDistributedDXTCache(ctx, cfg, old, newC, dxt, cacheDir, cacheTimings, tracef)
-	}
-
-	cachePath := filepath.Join(cacheDir, dxtCacheFileName(cfg, old, newC))
-	lockPath := cachePath + ".lock"
-	runID := practicalRunID(cfg, old, newC)
-	hitStart := time.Now()
-	if payload, err := readDXTCache(cachePath); err == nil {
-		cacheTimings["dxt_cache_hit"] += time.Since(hitStart)
-		tracef("phase=dxt_cache_hit path=%s dealers=%d", cachePath, len(payload.Transcripts))
-		return payload.Transcripts, payload.AllShares, cacheTimings, nil
-	}
-	cacheTimings["dxt_cache_hit"] += time.Since(hitStart)
-
-	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err == nil {
-		meta := cacheLockMeta{RunID: runID, PID: os.Getpid(), CreatedAt: time.Now().Unix()}
-		if raw, mErr := json.Marshal(meta); mErr == nil {
-			_, _ = lockFile.Write(raw)
-		}
-		_ = lockFile.Close()
-		tracef("phase=dxt_cache_build path=%s", cachePath)
-		buildStart := time.Now()
-		transcripts, allShares, dxtErr := computeAllDXT(ctx, old, dxt, tracef)
-		cacheTimings["dxt_cache_build"] += time.Since(buildStart)
-		if dxtErr != nil {
-			_ = os.Remove(lockPath)
-			return nil, nil, nil, dxtErr
-		}
-		payload := dxtCachePayload{
-			Transcripts: transcripts,
-			AllShares:   allShares,
-		}
-		if writeErr := writeDXTCache(cachePath, payload); writeErr != nil {
-			_ = os.Remove(lockPath)
-			return nil, nil, nil, writeErr
-		}
-		_ = os.Remove(lockPath)
-		tracef("phase=dxt_cache_store path=%s dealers=%d", cachePath, len(transcripts))
-		return transcripts, allShares, cacheTimings, nil
-	}
-	if !errors.Is(err, os.ErrExist) {
-		return nil, nil, nil, fmt.Errorf("create dxt cache lock: %w", err)
-	}
-	if stale, staleErr := cacheLockStale(lockPath, 10*time.Minute); staleErr == nil && stale {
-		_ = os.Remove(lockPath)
-		return loadOrComputeDXTCache(ctx, cfg, old, newC, dxt, tracef)
-	}
-
-	tracef("phase=dxt_cache_wait path=%s", cachePath)
-	waitStart := time.Now()
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		if payload, readErr := readDXTCache(cachePath); readErr == nil {
-			cacheTimings["dxt_cache_wait"] += time.Since(waitStart)
-			tracef("phase=dxt_cache_ready path=%s dealers=%d", cachePath, len(payload.Transcripts))
-			return payload.Transcripts, payload.AllShares, cacheTimings, nil
-		}
-		select {
-		case <-ctx.Done():
-			cacheTimings["dxt_cache_wait"] += time.Since(waitStart)
-			return nil, nil, nil, fmt.Errorf("waiting for dxt cache: %w", ctx.Err())
-		case <-ticker.C:
-		}
-	}
+	return loadOrComputeDistributedDXTCache(ctx, cfg, old, newC, dxt, cacheDir, cacheTimings, tracef)
 }
 
 func computeAllDXT(

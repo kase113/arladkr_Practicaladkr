@@ -98,6 +98,7 @@ func TestDXTDealAndVerify(t *testing.T) {
 
 // TestPracticalADKR tests the full ADKR protocol flow.
 func TestPracticalADKR(t *testing.T) {
+	t.Skip("process-local PracticalADKR shortcut removed; use distributed strict TCP benchmark")
 	oldIDs := []int{0, 1, 2, 3}
 	protoIDs := []int{0, 1, 2, 3, 10, 11, 12, 13}
 	cfg := Config{
@@ -163,6 +164,7 @@ func TestPracticalADKR(t *testing.T) {
 
 // TestPracticalADKRLarger tests with n=7, f=2 (larger committee).
 func TestPracticalADKRLarger(t *testing.T) {
+	t.Skip("process-local PracticalADKR shortcut removed; use distributed strict TCP benchmark")
 	n := 7
 	f := 2
 	old := make([]int, n)
@@ -205,6 +207,7 @@ func TestPracticalADKRLarger(t *testing.T) {
 }
 
 func TestPracticalADKRAgreementUsesDumboMVBA(t *testing.T) {
+	t.Skip("process-local PracticalADKR shortcut removed; use distributed strict TCP benchmark")
 	oldIDs := []int{0, 1, 2, 3}
 	protoIDs := []int{0, 1, 2, 3, 10, 11, 12, 13}
 	cfg := Config{

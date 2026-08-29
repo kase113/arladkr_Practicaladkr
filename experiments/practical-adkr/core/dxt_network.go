@@ -110,9 +110,8 @@ type dxtTranscriptVerifyJob struct {
 	result chan<- dxtTranscriptAck
 }
 
-// dxtNetworkService replaces the historical shared-directory readiness and
-// transcript exchange. Plaintext ACK auxiliary data remains receiver-local;
-// only fully verified public transcripts are exposed to the next phase.
+// dxtNetworkService coordinates readiness and transcript exchange. Plaintext
+// ACK auxiliary data remains receiver-local; only verified transcripts advance.
 type dxtNetworkService struct {
 	cfg       Config
 	dxt       *DXTBackend

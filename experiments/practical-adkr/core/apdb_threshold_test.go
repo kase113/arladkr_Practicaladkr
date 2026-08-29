@@ -39,7 +39,7 @@ func TestAPDBThresholdCertificateRoundTrip(t *testing.T) {
 	}
 	cert.ThresholdPublic = keys.groupPublic.Marshal()
 	if !verifyAPDBThresholdCertificate(cert, 2, keys.groupPublic.Marshal()) {
-		t.Fatal("legacy compact APDB certificate with matching setup key did not verify")
+		t.Fatal("compact APDB certificate with matching setup key did not verify")
 	}
 	otherKeys, err := generateThresholdCoinKeys(old, 2)
 	if err != nil {

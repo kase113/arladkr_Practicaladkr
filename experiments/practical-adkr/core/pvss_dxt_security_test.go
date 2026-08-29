@@ -393,7 +393,7 @@ func TestDXTVerificationRejectsProofAndACKMutation(t *testing.T) {
 		ProtocolLocalNodeIDs: buildIDsCSV(protoIDs),
 	}
 	dxt := setupDXTBackend(t, cfg)
-	// Force one receiver onto the VE fallback lane so this mutation test covers
+	// Force one receiver onto the VE lane so this mutation test covers
 	// both branches even when local ACK synthesis is available.
 	delete(dxt.recipientSignPriv, 13)
 	transcript, _, err := dxt.Deal(context.Background(), 0, nil)
@@ -426,7 +426,7 @@ func TestDXTVerificationRejectsProofAndACKMutation(t *testing.T) {
 		break
 	}
 	if veRecipient == 0 {
-		t.Fatal("test transcript did not contain a VE fallback lane")
+		t.Fatal("test transcript did not contain a VE lane")
 	}
 	proofBytes := append([]byte(nil), transcript.Proofs[veRecipient]...)
 	var proof EncryptedDLogProof

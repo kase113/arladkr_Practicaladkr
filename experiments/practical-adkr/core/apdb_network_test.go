@@ -47,7 +47,7 @@ func TestNetworkAPDBReadinessAllowsCrossRegionRTT(t *testing.T) {
 	<-served
 }
 
-func TestAPDBFramedWireRoundTripAndLegacyCompatibility(t *testing.T) {
+func TestAPDBFramedWireRoundTripRejectsUnframed(t *testing.T) {
 	shard := make([]byte, 64<<10)
 	for offset := 0; offset < len(shard); offset += sha256.Size {
 		digest := sha256.Sum256([]byte{byte(offset), byte(offset >> 8), byte(offset >> 16), 0xa5})
@@ -58,7 +58,7 @@ func TestAPDBFramedWireRoundTripAndLegacyCompatibility(t *testing.T) {
 		Root: bytes.Repeat([]byte{3}, sha256.Size), DataShards: 3, TotalShards: 7,
 		ShardIndex: 4, Shard: shard,
 	}
-	legacy, err := json.Marshal(want)
+	unframed, err := json.Marshal(want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,19 +66,18 @@ func TestAPDBFramedWireRoundTripAndLegacyCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(frame) >= len(legacy) || len(frame) < 7 || frame[0] != apdbFrameMagic[0] || frame[1] != apdbFrameMagic[1] || frame[2] != 1 {
-		t.Fatalf("APDB frame did not compress JSON bytes: frame=%d legacy=%d mode=%d", len(frame), len(legacy), frame[2])
+	if len(frame) >= len(unframed) || len(frame) < 7 || frame[0] != apdbFrameMagic[0] || frame[1] != apdbFrameMagic[1] || frame[2] != 1 {
+		t.Fatalf("APDB frame did not compress JSON bytes: frame=%d unframed=%d mode=%d", len(frame), len(unframed), frame[2])
 	}
 	var got apdbNetworkWire
 	read, err := readPracticalJSONFrame(bytes.NewReader(frame), apdbFrameMagic, &got)
 	if err != nil || read != len(frame) || got.Kind != want.Kind || !bytes.Equal(got.Shard, shard) {
 		t.Fatalf("APDB framed round trip failed: read=%d frame=%d err=%v", read, len(frame), err)
 	}
-	legacy = append(legacy, '\n')
+	unframed = append(unframed, '\n')
 	got = apdbNetworkWire{}
-	read, err = readPracticalJSONFrame(bytes.NewReader(legacy), apdbFrameMagic, &got)
-	if err != nil || read != len(legacy) || got.Kind != want.Kind || !bytes.Equal(got.Shard, shard) {
-		t.Fatalf("APDB legacy compatibility failed: read=%d want=%d err=%v", read, len(legacy), err)
+	if _, err = readPracticalJSONFrame(bytes.NewReader(unframed), apdbFrameMagic, &got); err == nil {
+		t.Fatal("unframed APDB wire was accepted")
 	}
 	if _, err := readPracticalJSONFrame(bytes.NewReader(frame[:len(frame)-1]), apdbFrameMagic, &apdbNetworkWire{}); err == nil {
 		t.Fatal("truncated APDB frame was accepted")

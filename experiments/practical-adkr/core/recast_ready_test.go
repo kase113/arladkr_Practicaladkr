@@ -73,11 +73,15 @@ func TestRecastTCPReadinessRejectsContextMutation(t *testing.T) {
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(300 * time.Millisecond))
 	bad := recastWire{Kind: "ready", SID: cfg.SID + "-wrong", Epoch: cfg.Epoch, Holder: 1}
-	if err := json.NewEncoder(conn).Encode(bad); err != nil {
+	body, err := marshalRecastNetworkWire(bad)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write(body); err != nil {
 		t.Fatal(err)
 	}
 	var ack recastWire
-	if err := json.NewDecoder(conn).Decode(&ack); err == nil {
+	if _, err := readRecastNetworkWire(conn, &ack); err == nil {
 		t.Fatal("recast readiness accepted a mismatched SID")
 	}
 }
@@ -141,7 +145,7 @@ func TestRecoverCompletionBarrierIsOptIn(t *testing.T) {
 	}
 	t.Setenv("PRACTICAL_RECOVER_COMPLETION_WAIT_MS", "250")
 	if !recoverCompletionBarrierEnabled() {
-		t.Fatal("positive completion wait did not enable the compatibility barrier")
+		t.Fatal("positive completion wait did not enable the completion barrier")
 	}
 }
 
@@ -181,7 +185,7 @@ func TestRecastNodeAddrMapUsesOptionalPortNamespace(t *testing.T) {
 	}
 }
 
-func TestRecastFramedWireRoundTripAndLegacyCompatibility(t *testing.T) {
+func TestRecastFramedWireRoundTripRejectsUnframed(t *testing.T) {
 	data := make([]byte, 64<<10)
 	for offset := 0; offset < len(data); offset += sha256.Size {
 		digest := sha256.Sum256([]byte{byte(offset), byte(offset >> 8), byte(offset >> 16)})
@@ -195,7 +199,7 @@ func TestRecastFramedWireRoundTripAndLegacyCompatibility(t *testing.T) {
 			DataShards: 3, TotalShards: 7, Data: data,
 		}},
 	}
-	legacy, err := json.Marshal(want)
+	unframed, err := json.Marshal(want)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -203,8 +207,8 @@ func TestRecastFramedWireRoundTripAndLegacyCompatibility(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(frame) >= len(legacy) || len(frame) < 7 || frame[0] != recastFrameMagic[0] || frame[1] != recastFrameMagic[1] || frame[2] != 1 {
-		t.Fatalf("recast frame did not compress JSON bytes: frame=%d legacy=%d mode=%d", len(frame), len(legacy), frame[2])
+	if len(frame) >= len(unframed) || len(frame) < 7 || frame[0] != recastFrameMagic[0] || frame[1] != recastFrameMagic[1] || frame[2] != 1 {
+		t.Fatalf("recast frame did not compress JSON bytes: frame=%d unframed=%d mode=%d", len(frame), len(unframed), frame[2])
 	}
 	var got recastWire
 	read, err := readRecastNetworkWire(bytes.NewReader(frame), &got)
@@ -216,11 +220,10 @@ func TestRecastFramedWireRoundTripAndLegacyCompatibility(t *testing.T) {
 		t.Fatalf("framed recast round trip mismatch: read=%d frame=%d", read, len(frame))
 	}
 
-	legacy = append(legacy, '\n')
+	unframed = append(unframed, '\n')
 	got = recastWire{}
-	read, err = readRecastNetworkWire(bytes.NewReader(legacy), &got)
-	if err != nil || got.Kind != want.Kind || !bytes.Equal(got.Shards[3].Data, data) || read != len(legacy) {
-		t.Fatalf("legacy recast wire compatibility failed: read=%d want=%d err=%v", read, len(legacy), err)
+	if _, err = readRecastNetworkWire(bytes.NewReader(unframed), &got); err == nil {
+		t.Fatal("unframed recast wire was accepted")
 	}
 	if _, err := readRecastNetworkWire(bytes.NewReader(frame[:len(frame)-1]), &recastWire{}); err == nil {
 		t.Fatal("truncated recast frame was accepted")
@@ -243,7 +246,7 @@ func startRecastReadyTestResponder(t *testing.T, ctx context.Context, cfg Config
 				defer conn.Close()
 				_ = conn.SetDeadline(time.Now().Add(time.Second))
 				var wire recastWire
-				if json.NewDecoder(conn).Decode(&wire) == nil {
+				if _, err := readRecastNetworkWire(conn, &wire); err == nil {
 					respondRecastReady(conn, cfg, localID, wire)
 				}
 			}()

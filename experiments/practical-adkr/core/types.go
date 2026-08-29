@@ -38,10 +38,6 @@ type Config struct {
 	MVBANodeAddrs string
 	// MVBALocalNodeIDs selects which node listeners to bind on this process: "0,1,...".
 	MVBALocalNodeIDs string
-	// DisableAgreementFallback makes MVBA failure fatal instead of using the
-	// local quorum fallback. Benchmarks set this to keep agreement metrics strict.
-	DisableAgreementFallback bool
-
 	// ProtocolNodeAddrs maps ids (old+new committees) to addresses for DXT/APDB stage messaging.
 	ProtocolNodeAddrs string
 	// ProtocolLocalNodeIDs selects locally hosted ids (old+new) for DXT/APDB stage listeners.
@@ -60,15 +56,9 @@ type Config struct {
 	// listener addresses. If empty, ports are derived from ProtocolNodeAddrs.
 	CompNodeAddrs string
 
-	// UsePythonBridge enables Python cryptography bridge (fallback).
-	UsePythonBridge bool
-	BridgePythonBin string
-	BridgeScript    string
-	AblationMode    string
-	CommMetrics     bool
+	CommMetrics bool
 
-	// StrictNetwork makes benchmark runs fail if protocol phases fall back to
-	// process-local shortcuts instead of the configured network transport.
+	// StrictNetwork enables the distributed TCP protocol path.
 	StrictNetwork bool
 }
 
@@ -134,9 +124,7 @@ type APDBReceipt struct {
 	Sender    int
 	ChunkHash []byte
 	Signature []byte
-	// ThresholdShare is an optional BLS receipt share used to form the
-	// compact APDB certificate. The Ed25519 Signature remains for legacy
-	// receipt validation and local compatibility paths.
+	// ThresholdShare is the BLS receipt share used to form the compact APDB certificate.
 	ThresholdShare []byte `json:",omitempty"`
 }
 
@@ -149,9 +137,8 @@ type APDBCertificate struct {
 	DataShards  int
 	TotalShards int
 	Receipts    []APDBReceipt
-	// Compact threshold proof. When present, Receipts may be omitted from the
-	// wire; the root/digest/RS metadata remains the same. ThresholdPublic is a
-	// legacy compatibility field; new wires use the trusted setup registry.
+	// Compact threshold proof. When present, Receipts may be omitted from the wire;
+	// the root/digest/RS metadata remains the same.
 	ThresholdSignature []byte `json:",omitempty"`
 	ThresholdPublic    []byte `json:",omitempty"`
 }
@@ -267,8 +254,6 @@ type Result struct {
 	SelectedTranscripts  []int // κ selected transcript IDs after Coin
 	RecoveredTranscripts map[int]*DXTTranscript
 	AgreementMode        string
-	AgreementFallback    bool
-	AblationMode         string
 	SelectedCount        int
 	VerifiedCount        int
 

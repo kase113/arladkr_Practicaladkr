@@ -45,7 +45,7 @@ type KappaSelection struct {
 
 // ResolvePracticalKappa selects the smallest kappa satisfying the requested
 // statistical failure budget for the minimal committee n=3f+1. It is kept for
-// compatibility; callers that know n should use ResolvePracticalKappaForCommittee.
+// ResolvePracticalKappaForCommittee is preferred when n is known.
 func ResolvePracticalKappa(f, explicit int, policy KappaPolicy) (KappaSelection, error) {
 	return resolvePracticalKappa(3*f+1, f, explicit, policy)
 }

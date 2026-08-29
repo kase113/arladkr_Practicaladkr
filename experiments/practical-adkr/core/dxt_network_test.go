@@ -170,8 +170,7 @@ func TestNetworkDXTCompletesWithoutAllReceiversOrDealers(t *testing.T) {
 		defer service.close()
 	}
 
-	// Receiver 13 is absent. Each dealer must still collect exactly 2f+1 real
-	// ACKs and create an exact VE fallback for the unavailable lane.
+	// Receiver 13 is absent; each dealer must create a VE lane for it.
 	for _, dealer := range old[:3] {
 		transcript, _, err := dxt.Deal(ctx, dealer, nil)
 		if err != nil {

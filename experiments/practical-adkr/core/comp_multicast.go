@@ -178,11 +178,6 @@ func runCompKeyDerivationMulticast(
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
-	// Transcript validity was established by the preceding partial-verify
-	// phase (or its explicitly selected full-local variant). Re-running the
-	// complete transcript verification here duplicated the O(k*n) crypto work
-	// for every receiver without changing the selected set or predicate.
-
 	localIDs := make([]int, 0, len(compKeys.private))
 	for _, id := range newCommittee {
 		if compKeys.private[id] != nil {
@@ -454,10 +449,7 @@ func collectCompKeyWires(
 		committeeSet[id] = struct{}{}
 	}
 	valid := make(map[int]CompPublicKeyShare, threshold)
-	// Paper good-case variant (Fig. 4d): once the interpolation threshold is
-	// met, wait a bounded extra window for KEY messages from the remaining
-	// committee members before interpolating. PRACTICAL_DERIVE_WAIT_ALL_MS=0
-	// (default) keeps the legacy proceed-at-threshold behavior.
+	// Optionally wait briefly after reaching the interpolation threshold.
 	waitAll := durationFromEnvMsOr("PRACTICAL_DERIVE_WAIT_ALL_MS", 0)
 	var waitAllDone <-chan time.Time
 	// The wait window overlaps with whatever the channel carries next (other

@@ -69,8 +69,7 @@ func readPracticalJSONFrame(reader io.Reader, magic [2]byte, value any) (int, er
 		return counted.read, err
 	}
 	if first[0] != magic[0] {
-		err = json.NewDecoder(buffered).Decode(value)
-		return counted.read, err
+		return counted.read, errors.New("invalid Practical JSON frame magic")
 	}
 	header := make([]byte, 7)
 	if _, err = io.ReadFull(buffered, header); err != nil {

@@ -20,7 +20,6 @@ type runStat struct {
 	decidedSetMean float64
 	selectedMean   float64
 	verifiedMean   float64
-	fallbackUsed   bool
 	phaseMs        map[string]float64
 	phaseCounts    map[string]float64
 	phaseSentBytes map[string]float64
@@ -48,10 +47,9 @@ func main() {
 		protoAddrs     = flag.String("proto-addrs", os.Getenv("PRACTICAL_PROTO_NODE_ADDRS"), "DXT/APDB node addresses, e.g. 0=10.0.0.1:9100,100=10.0.0.2:9101")
 		protoLocalIDs  = flag.String("proto-local-ids", os.Getenv("PRACTICAL_PROTO_LOCAL_NODE_IDS"), "DXT/APDB local node IDs, e.g. 0,1,100,101")
 		coinAddrs      = flag.String("coin-addrs", "", "dedicated threshold Coin.Get addresses for old nodes")
-		fallbackPolicy = flag.String("fallback-policy", "off", "fallback policy for comparable e2e runs: off only")
-		ablationMode   = flag.String("ablation-mode", "none", "ablation mode: none|no-partial-verify")
+		compAddrs      = flag.String("comp-addrs", os.Getenv("PRACTICAL_COMP_NODE_ADDRS"), "dedicated CompProve addresses for new nodes")
+		partialAddrs   = flag.String("partial-verify-addrs", os.Getenv("PRACTICAL_PARTIAL_VERIFY_NODE_ADDRS"), "dedicated partial-verification addresses for new nodes")
 		commMetrics    = flag.Bool("comm-metrics", false, "enable protocol-layer communication byte counters")
-		strictNetwork  = flag.Bool("strict-network", envBoolDefault("PRACTICAL_STRICT_NETWORK", true), "fail if benchmark config selects local protocol shortcuts")
 		setupKeygen    = flag.Bool("setup-keygen-only", false, "generate owner-provisioned trusted setup artifacts and exit")
 		setupOutputDir = flag.String("setup-output-dir", os.Getenv("PRACTICAL_SETUP_OUTPUT_DIR"), "output directory for --setup-keygen-only")
 	)
@@ -95,12 +93,6 @@ func main() {
 		os.Exit(1)
 	}
 	effectiveKappa := kappaSelection.Kappa
-	policy := strings.ToLower(strings.TrimSpace(*fallbackPolicy))
-	if policy != "off" {
-		fmt.Fprintln(os.Stderr, "practical-adkr strict benchmark only supports fallback-policy=off")
-		os.Exit(1)
-	}
-
 	oldC := make([]int, committeeSize)
 	newC := make([]int, committeeSize)
 	for i := 0; i < committeeSize; i++ {
@@ -163,22 +155,22 @@ func main() {
 	}
 
 	cfg := core.Config{
-		SID:                      "practical-adkr-bench",
-		OldCommittee:             oldC,
-		NewCommittee:             newC,
-		F:                        *f,
-		Kappa:                    effectiveKappa,
-		PaillierBits:             *paillierBits,
-		MVBANetwork:              *mvbaNetwork,
-		MVBANodeAddrs:            mvbaAddrsVal,
-		MVBALocalNodeIDs:         mvbaLocalIDsVal,
-		DisableAgreementFallback: true,
-		ProtocolNodeAddrs:        protoAddrsVal,
-		ProtocolLocalNodeIDs:     protoLocalIDsVal,
-		CoinNodeAddrs:            coinAddrsVal,
-		AblationMode:             *ablationMode,
-		CommMetrics:              *commMetrics,
-		StrictNetwork:            *strictNetwork,
+		SID:                    "practical-adkr-bench",
+		OldCommittee:           oldC,
+		NewCommittee:           newC,
+		F:                      *f,
+		Kappa:                  effectiveKappa,
+		PaillierBits:           *paillierBits,
+		MVBANetwork:            *mvbaNetwork,
+		MVBANodeAddrs:          mvbaAddrsVal,
+		MVBALocalNodeIDs:       mvbaLocalIDsVal,
+		ProtocolNodeAddrs:      protoAddrsVal,
+		ProtocolLocalNodeIDs:   protoLocalIDsVal,
+		CoinNodeAddrs:          coinAddrsVal,
+		CompNodeAddrs:          strings.TrimSpace(*compAddrs),
+		PartialVerifyNodeAddrs: strings.TrimSpace(*partialAddrs),
+		CommMetrics:            *commMetrics,
+		StrictNetwork:          true,
 	}
 	if *setupKeygen {
 		digest, err := core.GeneratePracticalSetupProvision(*setupOutputDir, cfg)
@@ -241,7 +233,7 @@ func main() {
 	// Optional synchronized start for shared-host multiprocess harnesses:
 	// every node waits until the same wall-clock deadline so startup skew does
 	// not eat into per-phase readiness windows. Deployment runners keep the
-	// historical immediate start by leaving the variable unset.
+	// Leave the variable unset for immediate start.
 	if raw := strings.TrimSpace(os.Getenv("PRACTICAL_START_AT_UNIX")); raw != "" {
 		if deadline, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
 			if wait := time.Until(time.Unix(deadline, 0)); wait > 0 {
@@ -253,6 +245,15 @@ func main() {
 	stats := make([]runStat, 0, *runs)
 	successRuns := 0
 	totalLatencyAllRuns := 0.0
+	epochBase := uint64(0)
+	if raw := strings.TrimSpace(os.Getenv("PRACTICAL_EPOCH_BASE")); raw != "" {
+		parsed, parseErr := strconv.ParseUint(raw, 10, 64)
+		if parseErr != nil {
+			fmt.Fprintf(os.Stderr, "invalid PRACTICAL_EPOCH_BASE=%q\n", raw)
+			os.Exit(1)
+		}
+		epochBase = parsed
+	}
 	requiredCompleted := localNodeCount
 	if requiredCompleted > committeeSize-2**f {
 		requiredCompleted = committeeSize - 2**f
@@ -265,7 +266,7 @@ func main() {
 	}
 	for i := 0; i < *runs; i++ {
 		runCfg := cfg
-		runCfg.Epoch = uint64(i)
+		runCfg.Epoch = epochBase + uint64(i)
 		attemptStart := time.Now()
 		ctx, cancel := context.WithTimeout(context.Background(), *timeout)
 		start := time.Now()
@@ -332,7 +333,6 @@ func main() {
 			decidedSetMean: float64(len(res.DecidedSet)),
 			selectedMean:   float64(res.SelectedCount),
 			verifiedMean:   float64(res.VerifiedCount),
-			fallbackUsed:   res.AgreementFallback,
 			phaseMs:        phaseTimingsMs(res.PhaseTimings),
 			phaseCounts:    phaseCountsFloat(res.PhaseTimings),
 			phaseSentBytes: phaseBytesFloat(res.PhaseSentBytes),
@@ -354,12 +354,11 @@ func main() {
 	meanVerified := meanOf(stats, func(s runStat) float64 { return s.verifiedMean })
 	meanSentBytes := meanOf(stats, func(s runStat) float64 { return s.totalSentBytes })
 	meanRecvBytes := meanOf(stats, func(s runStat) float64 { return s.totalRecvBytes })
-	fallbackRuns := countFallbackRuns(stats)
 	timeoutRuns := *runs - successRuns
 	consensusHash := summarizePracticalResultDigests(stats)
 
 	fmt.Printf(strings.Replace(
-		"E2E_BENCH_RESULT protocol=PRACTICAL-ADKR mode=strict start_phase=epoch_setup_start online_start_phase=post_service_setup end_phase=local_decide offline_keygen_included=false setup_bundle_digest=%s n=%d committee_size=%d total_logical_participants=%d f=%d kappa=%d kappa_profile=%s kappa_epoch_failure_prob=%.12g kappa_epoch_security_bits=%.6g kappa_lifetime_epochs=%d kappa_lifetime_union_bound=%.12g kappa_lifetime_security_bits=%.6g runs=%d timeout_ms=%d fallback_policy=%s ablation_mode=%s comm_metrics=%t success_runs=%d success_rate=%.4f mean_latency_ms=%.2f mean_all_latency_ms=%.2f p50_latency_ms=%.2f p95_latency_ms=%.2f mean_completed_nodes=%.2f mean_decided_set=%.2f mean_selected_count=%.2f mean_verified_count=%.2f mean_setup_ms=%.2f mean_online_protocol_ms=%.2f mean_online_active_known_ms=%.2f mean_dxt_dealing_ms=%.2f mean_dxt_network_build_ms=%.2f mean_dxt_network_wait_ms=%.2f mean_dxt_cache_hit_ms=%.2f mean_dxt_cache_build_ms=%.2f mean_dxt_cache_wait_ms=%.2f mean_apdb_dispersal_ms=%.2f mean_mvba_agree_ms=%.2f mean_mvba_peer_wait_ms=%.2f mean_mvba_active_known_ms=%.2f mean_coin_select_ms=%.2f mean_partial_verify_ms=%.2f mean_recover_ms=%.2f mean_recover_ready_ms=%.2f mean_recover_completion_ms=%.2f mean_recover_store_verify_ms=%.2f mean_recover_shard_verify_ms=%.2f mean_recover_verify_ms=%.2f mean_recover_store_seen=%.2f mean_recover_fetch_req_sent=%.2f mean_recover_fetch_resp_recv=%.2f mean_recover_recipient_seen=%.2f mean_derive_ms=%.2f mean_aggregate_derive_ms=%.2f mean_total_phase_ms=%.2f mean_total_sent_bytes=%.2f mean_total_recv_bytes=%.2f mean_dxt_sent_bytes=%.2f mean_dxt_recv_bytes=%.2f mean_apdb_sent_bytes=%.2f mean_apdb_recv_bytes=%.2f mean_mvba_sent_bytes=%.2f mean_mvba_recv_bytes=%.2f mean_coin_sent_bytes=%.2f mean_coin_recv_bytes=%.2f mean_partial_verify_sent_bytes=%.2f mean_partial_verify_recv_bytes=%.2f mean_recover_sent_bytes=%.2f mean_recover_recv_bytes=%.2f mean_derive_sent_bytes=%.2f mean_derive_recv_bytes=%.2f fallback_runs=%d timeout_runs=%d local_node_count=%d consensus_hash=%s\n",
+		"E2E_BENCH_RESULT protocol=PRACTICAL-ADKR mode=strict start_phase=epoch_setup_start online_start_phase=post_service_setup end_phase=local_decide offline_keygen_included=false setup_bundle_digest=%s n=%d committee_size=%d total_logical_participants=%d f=%d kappa=%d kappa_profile=%s kappa_epoch_failure_prob=%.12g kappa_epoch_security_bits=%.6g kappa_lifetime_epochs=%d kappa_lifetime_union_bound=%.12g kappa_lifetime_security_bits=%.6g runs=%d timeout_ms=%d comm_metrics=%t success_runs=%d success_rate=%.4f mean_latency_ms=%.2f mean_all_latency_ms=%.2f p50_latency_ms=%.2f p95_latency_ms=%.2f mean_completed_nodes=%.2f mean_decided_set=%.2f mean_selected_count=%.2f mean_verified_count=%.2f mean_setup_ms=%.2f mean_online_protocol_ms=%.2f mean_online_active_known_ms=%.2f mean_dxt_dealing_ms=%.2f mean_dxt_network_build_ms=%.2f mean_dxt_network_wait_ms=%.2f mean_dxt_cache_hit_ms=%.2f mean_dxt_cache_build_ms=%.2f mean_dxt_cache_wait_ms=%.2f mean_apdb_dispersal_ms=%.2f mean_mvba_agree_ms=%.2f mean_mvba_peer_wait_ms=%.2f mean_mvba_active_known_ms=%.2f mean_coin_select_ms=%.2f mean_partial_verify_ms=%.2f mean_recover_ms=%.2f mean_recover_ready_ms=%.2f mean_recover_completion_ms=%.2f mean_recover_store_verify_ms=%.2f mean_recover_shard_verify_ms=%.2f mean_recover_verify_ms=%.2f mean_recover_store_seen=%.2f mean_recover_fetch_req_sent=%.2f mean_recover_fetch_resp_recv=%.2f mean_recover_recipient_seen=%.2f mean_derive_ms=%.2f mean_aggregate_derive_ms=%.2f mean_total_phase_ms=%.2f mean_total_sent_bytes=%.2f mean_total_recv_bytes=%.2f mean_dxt_sent_bytes=%.2f mean_dxt_recv_bytes=%.2f mean_apdb_sent_bytes=%.2f mean_apdb_recv_bytes=%.2f mean_mvba_sent_bytes=%.2f mean_mvba_recv_bytes=%.2f mean_coin_sent_bytes=%.2f mean_coin_recv_bytes=%.2f mean_partial_verify_sent_bytes=%.2f mean_partial_verify_recv_bytes=%.2f mean_recover_sent_bytes=%.2f mean_recover_recv_bytes=%.2f mean_derive_sent_bytes=%.2f mean_derive_recv_bytes=%.2f timeout_runs=%d local_node_count=%d consensus_hash=%s\n",
 		"offline_keygen_included=false",
 		"offline_keygen_included=false setup_model=trusted-offline-owner-provisioned epoch_setup_included=true online_protocol_excludes_setup=true",
 		1,
@@ -378,8 +377,6 @@ func main() {
 		kappaSelection.LifetimeSecurityBits,
 		*runs,
 		timeout.Milliseconds(),
-		policy,
-		strings.ToLower(strings.TrimSpace(*ablationMode)),
 		*commMetrics,
 		successRuns,
 		successRate,
@@ -435,7 +432,6 @@ func main() {
 		meanPhaseBytes(stats, "recover", false),
 		meanPhaseBytes(stats, "derive", true),
 		meanPhaseBytes(stats, "derive", false),
-		fallbackRuns,
 		timeoutRuns,
 		localNodeCount,
 		consensusHash,
@@ -479,16 +475,6 @@ func durationFromEnvMs(name string) time.Duration {
 		return 0
 	}
 	return time.Duration(v) * time.Millisecond
-}
-
-func countFallbackRuns(stats []runStat) int {
-	count := 0
-	for _, s := range stats {
-		if s.fallbackUsed {
-			count++
-		}
-	}
-	return count
 }
 
 func phaseTimingsMs(timings map[string]time.Duration) map[string]float64 {

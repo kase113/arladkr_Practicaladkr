@@ -302,6 +302,7 @@ func dialableProtocolReplyAddr(listenerAddr string, addrMap map[int]string, loca
 	return net.JoinHostPort("127.0.0.1", port)
 }
 
+/*
 func runAPDBDispersalLocal(
 	ctx context.Context,
 	cfg Config,
@@ -404,6 +405,7 @@ func runAPDBDispersalLocal(
 		Certificates: certs,
 	}, nil
 }
+*/
 
 func verifyAPDBCertificate(cert APDBCertificate, nodePub map[int]ed25519.PublicKey, configuredFaults ...int) bool {
 	if len(cert.Root) != sha256.Size {

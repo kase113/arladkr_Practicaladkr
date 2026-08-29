@@ -211,7 +211,7 @@ func traceMVBATCP(format string, args ...any) {
 func (n *mvbaTCPNet) Broadcast(msg dmvba.ProtocolMessage) error {
 	traceMVBATCP("broadcast from=%d tag=%d round=%d leader=%d peers=%d", n.id, msg.Tag, msg.Round, msg.Leader, len(n.hub.recv))
 	// The wire is target-independent. Encode/gzip it once and reuse the
-	// immutable body for every peer; Send previously repeated this work n times.
+	// Build one immutable body for every peer.
 	body, err := marshalMVBATCPWire(mvbaTCPWire{From: n.id, Msg: msg})
 	if err != nil {
 		return err

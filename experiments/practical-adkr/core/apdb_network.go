@@ -673,7 +673,7 @@ func networkAPDBShardStorePath(base string, cfg Config, old []int, holder, deale
 }
 
 // loadNetworkAPDBShard is the RC-side read of the exact shard persisted by PD.
-// It never regenerates a codeword from a process-local full transcript.
+// It stores and verifies the received erasure-coded shard.
 func loadNetworkAPDBShard(cfg Config, old []int, holder int, cert APDBCertificate) (apdbNetworkWire, error) {
 	base := strings.TrimSpace(os.Getenv("PRACTICAL_ARTIFACT_CACHE_DIR"))
 	if base == "" {

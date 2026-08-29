@@ -13,7 +13,7 @@ import (
 const apdbThresholdDomain = "PRACTICAL_ADKR_APDB_LOCK_V1"
 
 // apdbThresholdDigest binds the compact proof to exactly the same APDB
-// commitment metadata that legacy receipts validate.
+// commitment metadata used to validate receipts.
 func apdbThresholdDigest(cert APDBCertificate) []byte {
 	h := sha256.New()
 	h.Write([]byte("PRACTICAL-APDB-THRESHOLD-LOCK-V1"))

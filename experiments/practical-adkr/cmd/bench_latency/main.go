@@ -317,9 +317,9 @@ func main() {
 			continue
 		}
 		barrierCtx, barrierCancel := context.WithTimeout(context.Background(), *timeout)
-		barrierErr := waitForBenchmarkEpoch(
+		barrierErr := waitForBenchmarkEpochQuorum(
 			barrierCtx, epochBarrierDir, runCfg.SID, i+1, runCfg.Epoch,
-			oldC, localBarrierNodes, resultDigest,
+			oldC, localBarrierNodes, resultDigest, committeeSize-*f,
 		)
 		barrierCancel()
 		if barrierErr != nil {

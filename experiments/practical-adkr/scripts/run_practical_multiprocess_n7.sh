@@ -5,10 +5,12 @@ set -euo pipefail
 # Trusted setup is generated once before timing. Each process receives the
 # common public bundle and only its own signing, decryption, and coin shares.
 
-# Override these values for a matched committee experiment, e.g. n=16/f=5/kappa=6.
+# Set PRACTICAL_MP_KAPPA only for an explicit override.  With the default 0,
+# bench_latency derives the inclusion sample from the selected security profile.
 N="${PRACTICAL_MP_N:-7}"
 F="${PRACTICAL_MP_F:-2}"
-KAPPA="${PRACTICAL_MP_KAPPA:-3}"
+KAPPA="${PRACTICAL_MP_KAPPA:-0}"
+KAPPA_PROFILE="${PRACTICAL_MP_KAPPA_PROFILE:-practical-original}"
 PORT_BASE="${PRACTICAL_MP_PORT_BASE:-23000}"
 MVBA_PORT_BASE="${PRACTICAL_MP_MVBA_PORT_BASE:-${PORT_BASE}}"
 PROTO_PORT_BASE="${PRACTICAL_MP_PROTO_PORT_BASE:-$((PORT_BASE + 1000))}"
@@ -19,7 +21,7 @@ if (( MVBA_PORT_BASE <= 0 || PROTO_PORT_BASE <= 0 || COIN_PORT_BASE <= 0 || COMP
   printf 'invalid port base configuration\n' >&2
   exit 2
 fi
-if (( N <= 0 || F < 0 || KAPPA <= 0 || KAPPA > 2 * F + 1 || N < 3 * F + 1 )); then
+if (( N <= 0 || F < 0 || KAPPA < 0 || KAPPA > 2 * F + 1 || N < 3 * F + 1 )); then
   printf 'invalid committee parameters: n=%s f=%s kappa=%s\n' "${N}" "${F}" "${KAPPA}" >&2
   exit 2
 fi
@@ -63,7 +65,7 @@ if [[ ! -x "${BIN}" || "${REBUILD_PRACTICAL_MP:-1}" == "1" ]]; then
   (cd "${ROOT_DIR}" && go build -o "${BIN}" ./cmd/bench_latency)
 fi
 
-"${BIN}" -n "${N}" -f "${F}" -kappa "${KAPPA}" -runs 1 \
+"${BIN}" -n "${N}" -f "${F}" -kappa "${KAPPA}" -kappa-profile "${KAPPA_PROFILE}" -runs 1 \
   -paillier-bits "${PRACTICAL_MP_PAILLIER_BITS:-3072}" \
   -setup-keygen-only -setup-output-dir "${SETUP_DIR}"
 
@@ -106,7 +108,7 @@ for id in $(seq 0 $((N - 1))); do
   "${epoch_barrier_env[@]}" \
   PRACTICAL_STRICT_NETWORK=1 \
   "${BIN}" \
-    -n "${N}" -f "${F}" -kappa "${KAPPA}" -runs "${PRACTICAL_MP_RUNS:-1}" \
+    -n "${N}" -f "${F}" -kappa "${KAPPA}" -kappa-profile "${KAPPA_PROFILE}" -runs "${PRACTICAL_MP_RUNS:-1}" \
     -timeout "${PRACTICAL_MP_TIMEOUT:-120s}" \
     -paillier-bits "${PRACTICAL_MP_PAILLIER_BITS:-3072}" \
     -mvba-network tcp \

@@ -61,11 +61,29 @@ func waitForBenchmarkEpoch(
 	committee, localNodes []int,
 	digest string,
 ) error {
+	return waitForBenchmarkEpochQuorum(ctx, dir, sid, run, epoch, committee, localNodes, digest, len(committee))
+}
+
+// waitForBenchmarkEpochQuorum waits for a consistent result from the required
+// number of committee members. The protocol completion condition is quorum;
+// requiring every marker here would turn a valid n-f result into a timeout.
+func waitForBenchmarkEpochQuorum(
+	ctx context.Context,
+	dir, sid string,
+	run int,
+	epoch uint64,
+	committee, localNodes []int,
+	digest string,
+	required int,
+) error {
 	if dir == "" {
 		return nil
 	}
 	if ctx == nil || sid == "" || len(committee) == 0 || len(localNodes) == 0 || digest == "" {
 		return fmt.Errorf("invalid benchmark epoch barrier input")
+	}
+	if required <= 0 || required > len(committee) {
+		return fmt.Errorf("invalid benchmark epoch barrier quorum: required=%d committee=%d", required, len(committee))
 	}
 	sidDigest := sha256.Sum256([]byte(sid))
 	epochDir := filepath.Join(
@@ -114,12 +132,12 @@ func waitForBenchmarkEpoch(
 			}
 			ready++
 		}
-		if ready == len(committee) {
+		if ready >= required {
 			return nil
 		}
 		select {
 		case <-ctx.Done():
-			return fmt.Errorf("benchmark epoch barrier ready=%d/%d: %w", ready, len(committee), ctx.Err())
+			return fmt.Errorf("benchmark epoch barrier ready=%d/%d: %w", ready, required, ctx.Err())
 		case <-ticker.C:
 		}
 	}

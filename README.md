@@ -46,6 +46,17 @@ Arguments are `n`, `f`, epoch count (series only), output directory, and base
 TCP port. Results include quorum status, latency, consensus hash, and protocol
 sent bytes per node.
 
+PracticalADKR derives its transcript sample (`kappa`) from `kappa-profile` by
+default; the multiprocess runner no longer assumes a fixed sample size. Set
+`PRACTICAL_MP_KAPPA_PROFILE=practical-original` (the runner default, or another
+documented profile) for a paper operating point, and use `PRACTICAL_MP_KAPPA`
+only for an explicit override. The epoch barrier accepts a consistent `n-f`
+result quorum.
+
+The ARL `smoke` sampling target is only a fast flow/readiness check with small
+proposer and validator samples. It is not a paper security profile; formal
+measurements must select `original` or `high-assurance` explicitly.
+
 ## Experiment data and figures
 
 The `data/` directory contains the English experiment summaries and the

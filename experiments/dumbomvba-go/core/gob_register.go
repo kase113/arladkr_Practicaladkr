@@ -23,6 +23,7 @@ func init() {
 	gob.Register(coinShareMsg{})
 	gob.Register(abaEstMsg{})
 	gob.Register(abaDecisionMsg{})
+	gob.Register(abaPhaseMsg{})
 	gob.Register(acsDiffuseMsg{})
 	gob.Register(acsVectorEntry{})
 	gob.Register(mvbaABAVoteMsg{})

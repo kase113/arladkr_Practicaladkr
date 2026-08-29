@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -579,6 +580,17 @@ func arlMVBALane(msg dmvba.ProtocolMessage, lanes int) int {
 	tag := msg.Tag
 	leader := msg.Leader
 	round := msg.Round
+	if msg.Tag == dmvba.TagMVBAABA {
+		body := reflect.ValueOf(msg.Body)
+		if body.IsValid() && body.Kind() == reflect.Struct {
+			if phase := body.FieldByName("Phase"); phase.IsValid() && phase.Kind() == reflect.String {
+				tag = dmvba.ProtocolTag(string(tag) + "/" + phase.String())
+			}
+			if internalRound := body.FieldByName("Round"); internalRound.IsValid() && internalRound.Kind() >= reflect.Int && internalRound.Kind() <= reflect.Int64 {
+				round = int(internalRound.Int())
+			}
+		}
+	}
 	if msg.Tag == dmvba.TagACSMVBA {
 		if inner, ok := msg.Body.(dmvba.ProtocolMessage); ok {
 			tag = inner.Tag

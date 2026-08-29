@@ -299,6 +299,18 @@ type abaDecisionMsg struct {
 	Value int
 }
 
+// abaPhaseMsg carries one internal MMR14 ABA phase. The enclosing
+// ProtocolMessage.Round remains the outer MVBA permutation round; Round here
+// prevents messages from different ABA rounds from being mixed.
+type abaPhaseMsg struct {
+	SID    string
+	Iter   int
+	Round  int
+	Phase  string
+	Value  int
+	Values []int
+}
+
 type acsDiffuseMsg struct {
 	SID   string
 	Value ProposalValue

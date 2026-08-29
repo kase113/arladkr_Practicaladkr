@@ -15,6 +15,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -394,7 +395,7 @@ func newMVBATCPHub(cfg Config, recv []chan dmvba.ReceivedMessage) (*mvbaTCPHub, 
 		backoff:   durationFromEnvMsOr("PRACTICAL_MVBA_RETRY_BACKOFF_MS", 120*time.Millisecond),
 		enqueueTO: durationFromEnvMsOr("PRACTICAL_MVBA_ENQUEUE_TIMEOUT_MS", 500*time.Millisecond),
 		pool:      make(map[string]*pracPoolConn),
-		poolLanes: practicalMVBAPoolLanes(),
+		poolLanes: practicalMVBAPoolLanes(n),
 		netTiming: strings.TrimSpace(os.Getenv("PRACTICAL_MVBA_NET_TIMING")) != "",
 		netStats:  make(map[string]*practicalMVBANetStat),
 	}
@@ -497,8 +498,12 @@ func practicalMVBANetTag(msg dmvba.ProtocolMessage) string {
 	return string(msg.Tag)
 }
 
-func practicalMVBAPoolLanes() int {
-	lanes := intFromEnvOr("PRACTICAL_MVBA_CONN_LANES", 1)
+func practicalMVBAPoolLanes(n int) int {
+	defaultLanes := 1
+	if n >= 16 {
+		defaultLanes = 2
+	}
+	lanes := intFromEnvOr("PRACTICAL_MVBA_CONN_LANES", defaultLanes)
 	if lanes < 1 {
 		return 1
 	}
@@ -523,6 +528,17 @@ func practicalMVBALane(msg dmvba.ProtocolMessage, lanes int) int {
 	tag := msg.Tag
 	leader := msg.Leader
 	round := msg.Round
+	if msg.Tag == dmvba.TagMVBAABA {
+		body := reflect.ValueOf(msg.Body)
+		if body.IsValid() && body.Kind() == reflect.Struct {
+			if phase := body.FieldByName("Phase"); phase.IsValid() && phase.Kind() == reflect.String {
+				tag = dmvba.ProtocolTag(string(tag) + "/" + phase.String())
+			}
+			if internalRound := body.FieldByName("Round"); internalRound.IsValid() && internalRound.Kind() >= reflect.Int && internalRound.Kind() <= reflect.Int64 {
+				round = int(internalRound.Int())
+			}
+		}
+	}
 	if msg.Tag == dmvba.TagACSMVBA {
 		if inner, ok := msg.Body.(dmvba.ProtocolMessage); ok {
 			tag = inner.Tag

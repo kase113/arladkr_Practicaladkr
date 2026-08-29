@@ -7,6 +7,7 @@ Go implementations and benchmark runners for ARL-ADKR and PracticalADKR.
 - Go 1.26+, Bash, GNU `timeout`, and `awk`
 - A sibling `dumbomvba-go` checkout referenced by `go.mod`
 - AWS benchmarks: Terraform, Python 3 with `boto3`, AWS CLI v2, and an authenticated profile
+- Figure rendering: Python 3 with `numpy`, `matplotlib`, and Jupyter
 
 ## Running and benchmarking locally
 
@@ -44,6 +45,21 @@ experiments/practical-adkr/scripts/run_practical_epoch_series.sh \
 Arguments are `n`, `f`, epoch count (series only), output directory, and base
 TCP port. Results include quorum status, latency, consensus hash, and protocol
 sent bytes per node.
+
+## Experiment data and figures
+
+The `data/` directory contains the English experiment summaries and the
+`figure.ipynb` notebook. The notebook reads `experiment_data.md` and writes
+standalone PNG/PDF figures under `data/figures/arl_adkr_experimentsum`.
+
+Render the notebook from the repository root with:
+
+```sh
+cd data
+jupyter nbconvert --to notebook --execute figure.ipynb \
+  --output /tmp/figure-executed.ipynb \
+  --ExecutePreprocessor.timeout=120
+```
 
 ## Running and benchmarking on AWS
 

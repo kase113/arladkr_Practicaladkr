@@ -15,29 +15,29 @@ import (
 )
 
 const (
-	cvValidatorRegistryV2Version  = 2
-	cvValidatorRegistryV2Filename = "validator-registry-v2.json"
-	cvValidatorRegistryV2Domain   = "ARL-CV-sAPVSS/v2-scalar-group/validator-registry"
-	cvValidatorPoPDomain          = "ARL-CV-sAPVSS/v2-scalar-group/validator-pop"
+	cvValidatorRegistryScalarVersion  = 2
+	cvValidatorRegistryScalarFilename = "validator-registry-v2.json"
+	cvValidatorRegistryScalarDomain   = "ARL-CV-sAPVSS/v2-scalar-group/validator-registry"
+	cvValidatorPoPDomain              = "ARL-CV-sAPVSS/v2-scalar-group/validator-pop"
 )
 
-// cvValidatorRegistryEntryV2 contains a validator's independent BLS key. It
+// cvValidatorRegistryEntryScalar contains a validator's independent BLS key. It
 // is deliberately separate from all threshold roles in the old committee key
 // bundle: a VCert is a sampled collection of individually accountable votes.
-type cvValidatorRegistryEntryV2 struct {
+type cvValidatorRegistryEntryScalar struct {
 	MemberID       int    `json:"member_id"`
 	PublicKey      string `json:"public_key"`
 	ProofOfPossess string `json:"proof_of_possession"`
 }
 
-type cvValidatorRegistryV2 struct {
-	Version    int                          `json:"version"`
-	SID        string                       `json:"sid"`
-	Epoch      uint64                       `json:"epoch"`
-	Validators []cvValidatorRegistryEntryV2 `json:"validators"`
+type cvValidatorRegistryScalar struct {
+	Version    int                              `json:"version"`
+	SID        string                           `json:"sid"`
+	Epoch      uint64                           `json:"epoch"`
+	Validators []cvValidatorRegistryEntryScalar `json:"validators"`
 }
 
-type cvValidatorKeyMaterialV2 struct {
+type cvValidatorKeyMaterialScalar struct {
 	memberOrder  []int
 	memberIndex  map[int]int
 	publicKeys   []bls12381.G2Affine
@@ -47,11 +47,11 @@ type cvValidatorKeyMaterialV2 struct {
 	epoch        uint64
 }
 
-func cvValidatorV2SecretPath(dir string, memberID int) string {
+func cvValidatorScalarSecretPath(dir string, memberID int) string {
 	return filepath.Join(dir, fmt.Sprintf("old-node-%d-validator.scalar", memberID))
 }
 
-func cvValidatorPoPStatementV2(sid string, epoch uint64, memberID int, publicKey *bls12381.G2Affine) ([]byte, error) {
+func cvValidatorPoPStatementScalar(sid string, epoch uint64, memberID int, publicKey *bls12381.G2Affine) ([]byte, error) {
 	if sid == "" || epoch == 0 || memberID < 0 || publicKey == nil || !cvValidG2(publicKey) {
 		return nil, fmt.Errorf("invalid CV V2 validator PoP statement")
 	}
@@ -64,7 +64,7 @@ func cvValidatorPoPStatementV2(sid string, epoch uint64, memberID int, publicKey
 	return hashBytes([]byte(cvValidatorPoPDomain), wire.Bytes()), nil
 }
 
-func cvSignValidatorV2(secret fr.Element, domain string, digest []byte) ([]byte, error) {
+func cvSignValidatorScalar(secret fr.Element, domain string, digest []byte) ([]byte, error) {
 	if secret.IsZero() || domain == "" || len(digest) != 32 {
 		return nil, fmt.Errorf("invalid CV V2 validator signing input")
 	}
@@ -78,7 +78,7 @@ func cvSignValidatorV2(secret fr.Element, domain string, digest []byte) ([]byte,
 	return append([]byte(nil), encoded[:]...), nil
 }
 
-func cvVerifyValidatorSignatureV2(publicKey *bls12381.G2Affine, domain string, digest, signatureWire []byte) bool {
+func cvVerifyValidatorSignatureScalar(publicKey *bls12381.G2Affine, domain string, digest, signatureWire []byte) bool {
 	if publicKey == nil || !cvValidG2(publicKey) || domain == "" || len(digest) != 32 ||
 		len(signatureWire) != bls12381.SizeOfG1AffineCompressed {
 		return false
@@ -101,7 +101,7 @@ func cvVerifyValidatorSignatureV2(publicKey *bls12381.G2Affine, domain string, d
 	return err == nil && ok
 }
 
-func cvGenerateValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint64, members []int) error {
+func cvGenerateValidatorRegistryScalar(publicDir, secretDir, sid string, epoch uint64, members []int) error {
 	if publicDir == "" || secretDir == "" || sid == "" || epoch == 0 || len(members) == 0 {
 		return fmt.Errorf("invalid CV V2 validator registry generation parameters")
 	}
@@ -120,9 +120,9 @@ func cvGenerateValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint6
 	if err := os.Chmod(secretDir, 0o700); err != nil {
 		return err
 	}
-	paths := []string{filepath.Join(publicDir, cvValidatorRegistryV2Filename)}
+	paths := []string{filepath.Join(publicDir, cvValidatorRegistryScalarFilename)}
 	for _, member := range members {
-		paths = append(paths, cvValidatorV2SecretPath(secretDir, member))
+		paths = append(paths, cvValidatorScalarSecretPath(secretDir, member))
 	}
 	for _, path := range paths {
 		if _, err := os.Lstat(path); err == nil {
@@ -132,7 +132,7 @@ func cvGenerateValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint6
 		}
 	}
 
-	registry := cvValidatorRegistryV2{Version: cvValidatorRegistryV2Version, SID: sid, Epoch: epoch, Validators: make([]cvValidatorRegistryEntryV2, len(members))}
+	registry := cvValidatorRegistryScalar{Version: cvValidatorRegistryScalarVersion, SID: sid, Epoch: epoch, Validators: make([]cvValidatorRegistryEntryScalar, len(members))}
 	secrets := make([][]byte, len(members))
 	seen := make(map[[bls12381.SizeOfG2AffineCompressed]byte]struct{}, len(members))
 	for i, member := range members {
@@ -152,22 +152,22 @@ func cvGenerateValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint6
 				break
 			}
 		}
-		statement, err := cvValidatorPoPStatementV2(sid, epoch, member, &publicKey)
+		statement, err := cvValidatorPoPStatementScalar(sid, epoch, member, &publicKey)
 		if err != nil {
 			return err
 		}
-		proof, err := cvSignValidatorV2(secret, cvValidatorPoPDomain, statement)
+		proof, err := cvSignValidatorScalar(secret, cvValidatorPoPDomain, statement)
 		if err != nil {
 			return err
 		}
 		publicEncoded := publicKey.Bytes()
 		secretEncoded := secret.Bytes()
-		registry.Validators[i] = cvValidatorRegistryEntryV2{
+		registry.Validators[i] = cvValidatorRegistryEntryScalar{
 			MemberID: member, PublicKey: hex.EncodeToString(publicEncoded[:]), ProofOfPossess: hex.EncodeToString(proof),
 		}
 		secrets[i] = append([]byte(nil), secretEncoded[:]...)
 	}
-	if _, err := cvValidatorRegistryV2Digest(&registry); err != nil {
+	if _, err := cvValidatorRegistryScalarDigest(&registry); err != nil {
 		return err
 	}
 	raw, err := json.MarshalIndent(registry, "", "  ")
@@ -182,22 +182,22 @@ func cvGenerateValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint6
 		}
 	}
 	for i, member := range members {
-		path := cvValidatorV2SecretPath(secretDir, member)
+		path := cvValidatorScalarSecretPath(secretDir, member)
 		if err := cvWriteExclusiveKeyFile(path, secrets[i], 0o600); err != nil {
 			cleanup()
 			return err
 		}
 		created = append(created, path)
 	}
-	if err := cvWriteExclusiveKeyFile(filepath.Join(publicDir, cvValidatorRegistryV2Filename), raw, 0o644); err != nil {
+	if err := cvWriteExclusiveKeyFile(filepath.Join(publicDir, cvValidatorRegistryScalarFilename), raw, 0o644); err != nil {
 		cleanup()
 		return err
 	}
 	return nil
 }
 
-func cvValidatorRegistryV2Digest(registry *cvValidatorRegistryV2) ([]byte, error) {
-	if registry == nil || registry.Version != cvValidatorRegistryV2Version || registry.SID == "" || registry.Epoch == 0 || len(registry.Validators) == 0 {
+func cvValidatorRegistryScalarDigest(registry *cvValidatorRegistryScalar) ([]byte, error) {
+	if registry == nil || registry.Version != cvValidatorRegistryScalarVersion || registry.SID == "" || registry.Epoch == 0 || len(registry.Validators) == 0 {
 		return nil, fmt.Errorf("invalid CV V2 validator registry")
 	}
 	var wire bytes.Buffer
@@ -223,10 +223,10 @@ func cvValidatorRegistryV2Digest(registry *cvValidatorRegistryV2) ([]byte, error
 		_ = cvWriteBytes(&wire, encoded[:])
 		_ = cvWriteBytes(&wire, proof)
 	}
-	return hashBytes([]byte(cvValidatorRegistryV2Domain), wire.Bytes()), nil
+	return hashBytes([]byte(cvValidatorRegistryScalarDomain), wire.Bytes()), nil
 }
 
-func cvLoadValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint64, expectedMembers, localMembers []int) (*cvValidatorKeyMaterialV2, error) {
+func cvLoadValidatorRegistryScalar(publicDir, secretDir, sid string, epoch uint64, expectedMembers, localMembers []int) (*cvValidatorKeyMaterialScalar, error) {
 	if publicDir == "" || secretDir == "" || sid == "" || epoch == 0 || len(expectedMembers) == 0 {
 		return nil, fmt.Errorf("invalid CV V2 validator registry loading parameters")
 	}
@@ -239,11 +239,11 @@ func cvLoadValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint64, e
 	if err := cvValidateDistinctReceiverIDs(localMembers, true); err != nil {
 		return nil, err
 	}
-	raw, err := cvReadBoundedRegularFile(filepath.Join(publicDir, cvValidatorRegistryV2Filename), cvMaxReceiverRegistryV2Bytes)
+	raw, err := cvReadBoundedRegularFile(filepath.Join(publicDir, cvValidatorRegistryScalarFilename), cvMaxReceiverRegistryScalarBytes)
 	if err != nil {
 		return nil, err
 	}
-	var registry cvValidatorRegistryV2
+	var registry cvValidatorRegistryScalar
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&registry); err != nil {
@@ -256,10 +256,10 @@ func cvLoadValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint64, e
 	if err != nil || !bytes.Equal(append(canonical, '\n'), raw) {
 		return nil, fmt.Errorf("non-canonical CV V2 validator registry")
 	}
-	if registry.Version != cvValidatorRegistryV2Version || registry.SID != sid || registry.Epoch != epoch || len(registry.Validators) != len(expectedMembers) {
+	if registry.Version != cvValidatorRegistryScalarVersion || registry.SID != sid || registry.Epoch != epoch || len(registry.Validators) != len(expectedMembers) {
 		return nil, fmt.Errorf("CV V2 validator registry context mismatch")
 	}
-	material := &cvValidatorKeyMaterialV2{
+	material := &cvValidatorKeyMaterialScalar{
 		memberOrder: append([]int(nil), expectedMembers...), memberIndex: make(map[int]int, len(expectedMembers)),
 		publicKeys: make([]bls12381.G2Affine, len(expectedMembers)), localSecrets: make(map[int]fr.Element, len(localMembers)), sid: sid, epoch: epoch,
 	}
@@ -276,8 +276,8 @@ func cvLoadValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint64, e
 		if err != nil || hex.EncodeToString(proof) != entry.ProofOfPossess {
 			return nil, fmt.Errorf("invalid CV V2 validator PoP encoding")
 		}
-		statement, err := cvValidatorPoPStatementV2(sid, epoch, entry.MemberID, &publicKey)
-		if err != nil || !cvVerifyValidatorSignatureV2(&publicKey, cvValidatorPoPDomain, statement, proof) {
+		statement, err := cvValidatorPoPStatementScalar(sid, epoch, entry.MemberID, &publicKey)
+		if err != nil || !cvVerifyValidatorSignatureScalar(&publicKey, cvValidatorPoPDomain, statement, proof) {
 			return nil, fmt.Errorf("invalid CV V2 validator proof of possession")
 		}
 		encoded := publicKey.Bytes()
@@ -288,7 +288,7 @@ func cvLoadValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint64, e
 		material.memberIndex[entry.MemberID] = i
 		material.publicKeys[i] = publicKey
 	}
-	material.registryHash, err = cvValidatorRegistryV2Digest(&registry)
+	material.registryHash, err = cvValidatorRegistryScalarDigest(&registry)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +297,7 @@ func cvLoadValidatorRegistryV2(publicDir, secretDir, sid string, epoch uint64, e
 		if !ok {
 			return nil, fmt.Errorf("local CV V2 validator is outside registry")
 		}
-		rawSecret, readErr := cvReadReceiverSecret(cvValidatorV2SecretPath(secretDir, member))
+		rawSecret, readErr := cvReadReceiverSecret(cvValidatorScalarSecretPath(secretDir, member))
 		if readErr != nil {
 			return nil, readErr
 		}

@@ -515,7 +515,7 @@ func apvssProveFeldmanFallback(
 	receiverIndices []int,
 ) (*apvssCompactFallbackProof, error) {
 	if leaf == nil || leaf.context.proofProfile != cvLeafStructuralProofProfile {
-		return nil, fmt.Errorf("Feldman fallback requires a structural leaf")
+		return nil, fmt.Errorf("feldman fallback requires a structural leaf")
 	}
 	var digitValues []uint64
 	var digitBlindings []fr.Element

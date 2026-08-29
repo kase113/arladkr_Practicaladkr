@@ -10,11 +10,11 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fr"
 )
 
-func cvHintsDecodeBaseline(t *testing.T, wire []byte, context *cvLeafContextV2,
-	receivers *cvReceiverKeyMaterialV2, validators *cvValidatorKeyMaterialV2,
+func cvHintsDecodeBaseline(t *testing.T, wire []byte, context *cvLeafContextScalar,
+	receivers *cvReceiverKeyMaterialScalar, validators *cvValidatorKeyMaterialScalar,
 ) []byte {
 	t.Helper()
-	leaf, err := cvDecodeLeafV2(wire, context, receivers, validators)
+	leaf, err := cvDecodeLeafScalar(wire, context, receivers, validators)
 	if err != nil {
 		t.Fatalf("baseline decode failed: %v", err)
 	}
@@ -22,53 +22,53 @@ func cvHintsDecodeBaseline(t *testing.T, wire []byte, context *cvLeafContextV2,
 }
 
 func TestCVPayloadHintsRoundTripEquivalence(t *testing.T) {
-	leaf, context, receivers, validators := cvAllACKLeafV2Fixture(t)
-	wire, err := cvLeafV2CanonicalBytes(leaf, receivers, validators)
+	leaf, context, receivers, validators := cvAllACKLeafScalarFixture(t)
+	wire, err := cvLeafScalarCanonicalBytes(leaf, receivers, validators)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantDigest := cvHintsDecodeBaseline(t, wire, context, receivers, validators)
 
-	hints := cvRecordLeafDeferredHintsV2(wire, context, receivers, validators)
+	hints := cvRecordLeafDeferredHintsScalar(wire, context, receivers, validators)
 	if len(hints) == 0 {
 		t.Fatal("recording produced no hints for a valid leaf")
 	}
 	if len(hints)%bls12381.SizeOfG1AffineUncompressed != 0 {
 		t.Fatalf("hint stream not a multiple of the uncompressed point size: %d", len(hints))
 	}
-	decoded, err := cvDecodeLeafV2WithHints(wire, hints, context, receivers, validators)
+	decoded, err := cvDecodeLeafScalarWithHints(wire, hints, context, receivers, validators)
 	if err != nil {
 		t.Fatalf("hint decode failed: %v", err)
 	}
 	if !bytes.Equal(decoded.Digest, wantDigest) {
 		t.Fatal("hint decode produced a different leaf digest")
 	}
-	if err := cvVerifyAPVSSV2(decoded, context, receivers, validators); err != nil {
+	if err := cvVerifyAPVSSScalar(decoded, context, receivers, validators); err != nil {
 		t.Fatalf("hint-decoded leaf did not verify: %v", err)
 	}
 }
 
 func TestCVDealerPayloadResponseCanOmitHints(t *testing.T) {
-	leaf, context, receivers, validators := cvAllACKLeafV2Fixture(t)
-	payload, err := cvLeafV2CanonicalBytes(leaf, receivers, validators)
+	leaf, context, receivers, validators := cvAllACKLeafScalarFixture(t)
+	payload, err := cvLeafScalarCanonicalBytes(leaf, receivers, validators)
 	if err != nil {
 		t.Fatal(err)
 	}
-	newService := func() *cvAPDBNetworkServiceV2 {
-		return &cvAPDBNetworkServiceV2{cfg: cvAPDBNetworkServiceConfigV2{
+	newService := func() *cvAPDBNetworkServiceScalar {
+		return &cvAPDBNetworkServiceScalar{cfg: cvAPDBNetworkServiceConfigScalar{
 			MaximumPayload: len(payload), LeafContext: context, Receivers: receivers, Validators: validators,
 		}}
 	}
 	instance := bytes.Repeat([]byte{9}, 32)
 
 	t.Setenv("RLADKR_APDB_PAYLOAD_HINTS", "1")
-	withHints, err := cvDecodeAPDBPayloadResponseV2(newService().dealerPayloadResponseV2(instance, payload), len(payload))
+	withHints, err := cvDecodeAPDBPayloadResponseScalar(newService().dealerPayloadResponseScalar(instance, payload), len(payload))
 	if err != nil || len(withHints.Hints) == 0 {
 		t.Fatalf("enabled dealer hints bytes=%d err=%v", len(withHints.Hints), err)
 	}
 
 	t.Setenv("RLADKR_APDB_PAYLOAD_HINTS", "0")
-	withoutHints, err := cvDecodeAPDBPayloadResponseV2(newService().dealerPayloadResponseV2(instance, payload), len(payload))
+	withoutHints, err := cvDecodeAPDBPayloadResponseScalar(newService().dealerPayloadResponseScalar(instance, payload), len(payload))
 	if err != nil || len(withoutHints.Hints) != 0 || !bytes.Equal(withoutHints.Payload, payload) {
 		t.Fatalf("payload-only response hints=%d err=%v", len(withoutHints.Hints), err)
 	}
@@ -94,13 +94,13 @@ func TestCVPayloadHintsDefaultToPayloadOnly(t *testing.T) {
 }
 
 func TestCVPayloadHintsCorruptionFallsBack(t *testing.T) {
-	leaf, context, receivers, validators := cvAllACKLeafV2Fixture(t)
-	wire, err := cvLeafV2CanonicalBytes(leaf, receivers, validators)
+	leaf, context, receivers, validators := cvAllACKLeafScalarFixture(t)
+	wire, err := cvLeafScalarCanonicalBytes(leaf, receivers, validators)
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantDigest := cvHintsDecodeBaseline(t, wire, context, receivers, validators)
-	hints := cvRecordLeafDeferredHintsV2(wire, context, receivers, validators)
+	hints := cvRecordLeafDeferredHintsScalar(wire, context, receivers, validators)
 	entry := bls12381.SizeOfG1AffineUncompressed
 	mid := (len(hints) / entry / 2) * entry
 
@@ -124,7 +124,7 @@ func TestCVPayloadHintsCorruptionFallsBack(t *testing.T) {
 		"wrong-sized tail": append(append([]byte(nil), hints...), 1),
 	}
 	for name, corrupted := range corruptions {
-		decoded, err := cvDecodeLeafV2WithHints(wire, corrupted, context, receivers, validators)
+		decoded, err := cvDecodeLeafScalarWithHints(wire, corrupted, context, receivers, validators)
 		if err != nil {
 			t.Fatalf("%s: decode failed after hint corruption: %v", name, err)
 		}
@@ -210,7 +210,7 @@ func TestCVPayloadHintsRejectOffCurveInjection(t *testing.T) {
 	if _, err := cvDecodeG1HintUnchecked(hint); err == nil {
 		t.Fatal("off-curve hint passed the on-curve check")
 	}
-	side := newCVDecodeSidechannelHintsV2(hint)
+	side := newCVDecodeSidechannelHintsScalar(hint)
 	if _, ok := side.consumeHint(encoded[:]); ok {
 		t.Fatal("off-curve hint with matching parity was consumed")
 	}
@@ -241,7 +241,7 @@ func TestCVPayloadHintsSubgroupSafetyUnchanged(t *testing.T) {
 
 	hints := cvAppendG1HintUncompressed(nil, &genG1)
 	hints = cvAppendG1HintUncompressed(hints, &outsider)
-	side := newCVDecodeSidechannelHintsV2(hints)
+	side := newCVDecodeSidechannelHintsScalar(hints)
 	r := newCVWireReaderSide(wire, side)
 	if _, err := r.pointDeferred(); err != nil {
 		t.Fatal(err)
@@ -266,13 +266,13 @@ func TestCVAPDBPayloadResponseHintsWireRoundTrip(t *testing.T) {
 	payload := []byte("component payload")
 	hints := cvAppendG1HintUncompressed(nil, &genG1)
 
-	withHints, err := cvAPDBPayloadResponseV2CanonicalBytes(
-		&cvAPDBPayloadResponseV2{InstanceDigest: instanceDigest, Payload: payload, Hints: hints},
+	withHints, err := cvAPDBPayloadResponseScalarCanonicalBytes(
+		&cvAPDBPayloadResponseScalar{InstanceDigest: instanceDigest, Payload: payload, Hints: hints},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := cvDecodeAPDBPayloadResponseV2(withHints, 1024)
+	decoded, err := cvDecodeAPDBPayloadResponseScalar(withHints, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -280,8 +280,8 @@ func TestCVAPDBPayloadResponseHintsWireRoundTrip(t *testing.T) {
 		t.Fatal("hints did not survive the response wire round trip")
 	}
 
-	legacy, err := cvAPDBPayloadResponseV2CanonicalBytes(
-		&cvAPDBPayloadResponseV2{InstanceDigest: instanceDigest, Payload: payload},
+	legacy, err := cvAPDBPayloadResponseScalarCanonicalBytes(
+		&cvAPDBPayloadResponseScalar{InstanceDigest: instanceDigest, Payload: payload},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -289,31 +289,31 @@ func TestCVAPDBPayloadResponseHintsWireRoundTrip(t *testing.T) {
 	if bytes.Equal(legacy, withHints) {
 		t.Fatal("legacy response should not carry hint bytes")
 	}
-	decodedLegacy, err := cvDecodeAPDBPayloadResponseV2(legacy, 1024)
+	decodedLegacy, err := cvDecodeAPDBPayloadResponseScalar(legacy, 1024)
 	if err != nil || len(decodedLegacy.Hints) != 0 {
 		t.Fatal("legacy response decode changed behavior")
 	}
 
 	oversized := append([]byte(nil), hints...)
-	for len(oversized) <= cvMaxPayloadHintsBytesV2(8) {
+	for len(oversized) <= cvMaxPayloadHintsBytesScalar(8) {
 		oversized = append(oversized, hints...)
 	}
-	overWire, err := cvAPDBPayloadResponseV2CanonicalBytes(
-		&cvAPDBPayloadResponseV2{InstanceDigest: instanceDigest, Payload: payload, Hints: oversized},
+	overWire, err := cvAPDBPayloadResponseScalarCanonicalBytes(
+		&cvAPDBPayloadResponseScalar{InstanceDigest: instanceDigest, Payload: payload, Hints: oversized},
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cvDecodeAPDBPayloadResponseV2(overWire, 8); err == nil {
+	if _, err := cvDecodeAPDBPayloadResponseScalar(overWire, 8); err == nil {
 		t.Fatal("oversized hint attachment was accepted")
 	}
 	trailing := append(append([]byte(nil), withHints...), 0)
-	if _, err := cvDecodeAPDBPayloadResponseV2(trailing, 1024); err == nil {
+	if _, err := cvDecodeAPDBPayloadResponseScalar(trailing, 1024); err == nil {
 		t.Fatal("trailing bytes after the hint field were accepted")
 	}
 	misaligned := cvAppendG1HintUncompressed(nil, &genG1)[:95]
-	if _, err := cvAPDBPayloadResponseV2CanonicalBytes(
-		&cvAPDBPayloadResponseV2{InstanceDigest: instanceDigest, Payload: payload, Hints: misaligned},
+	if _, err := cvAPDBPayloadResponseScalarCanonicalBytes(
+		&cvAPDBPayloadResponseScalar{InstanceDigest: instanceDigest, Payload: payload, Hints: misaligned},
 	); err == nil {
 		t.Fatal("misaligned hint attachment was encoded")
 	}

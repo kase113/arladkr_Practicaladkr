@@ -31,7 +31,7 @@ func apvssCloneCompactFallbackProofForTest(in *apvssCompactFallbackProof) *apvss
 	return &out
 }
 
-func TestAPVSSCompactFallbackRangeLinkComparatorV1(t *testing.T) {
+func TestAPVSSCompactFallbackRangeLinkComparatorLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	proof, err := apvssProveCompactFallback(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {
@@ -60,7 +60,7 @@ func TestAPVSSCompactFallbackRangeLinkComparatorV1(t *testing.T) {
 	}
 }
 
-func TestAPVSSFeldmanBatchFallbackV1(t *testing.T) {
+func TestAPVSSFeldmanBatchFallbackLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	indices := []int{1, 2}
 	proof, err := apvssProveFeldmanFallback(fixture.leaf, &fixture.witness, indices)
@@ -133,7 +133,7 @@ func TestAPVSSFeldmanBatchFallbackV1(t *testing.T) {
 	})
 }
 
-func TestAPVSSFeldmanBatchPrototypeCodecV1(t *testing.T) {
+func TestAPVSSFeldmanBatchPrototypeCodecLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	prototype, err := apvssBuildPrototypeWithFallbackProfile(
 		&fixture.context, fixture.leaf, fixture.receiverSecrets, fixture.signingSecrets,
@@ -162,7 +162,7 @@ func TestAPVSSFeldmanBatchPrototypeCodecV1(t *testing.T) {
 	}
 }
 
-func BenchmarkAPVSSFeldmanBatchFallbackProveN7F2I2V1(b *testing.B) {
+func BenchmarkAPVSSFeldmanBatchFallbackProveN7F2I2Legacy(b *testing.B) {
 	fixture := apvssFixture(b, 7, 2)
 	proof, err := apvssProveFeldmanFallback(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {
@@ -181,7 +181,7 @@ func BenchmarkAPVSSFeldmanBatchFallbackProveN7F2I2V1(b *testing.B) {
 	b.ReportMetric(float64(len(wire)), "proof_bytes")
 }
 
-func BenchmarkAPVSSFeldmanBatchFallbackVerifyN7F2I2V1(b *testing.B) {
+func BenchmarkAPVSSFeldmanBatchFallbackVerifyN7F2I2Legacy(b *testing.B) {
 	fixture := apvssFixture(b, 7, 2)
 	proof, err := apvssProveFeldmanFallback(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {
@@ -200,7 +200,7 @@ func BenchmarkAPVSSFeldmanBatchFallbackVerifyN7F2I2V1(b *testing.B) {
 	b.ReportMetric(float64(len(wire)), "proof_bytes")
 }
 
-func TestAPVSSCompactPrototypeRuntimeAndWireV1(t *testing.T) {
+func TestAPVSSCompactPrototypeRuntimeAndWireLegacy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("experimental compact fallback prototype")
 	}
@@ -319,7 +319,7 @@ func TestAPVSSCompactPrototypeRuntimeAndWireV1(t *testing.T) {
 	})
 }
 
-func BenchmarkAPVSSCompactFallbackProveN7F2V1(b *testing.B) {
+func BenchmarkAPVSSCompactFallbackProveN7F2Legacy(b *testing.B) {
 	fixture := apvssFixture(b, 7, 2)
 	proof, err := apvssProveCompactFallback(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {
@@ -338,7 +338,7 @@ func BenchmarkAPVSSCompactFallbackProveN7F2V1(b *testing.B) {
 	b.ReportMetric(float64(len(wire)), "proof_bytes")
 }
 
-func BenchmarkAPVSSCompactFallbackVerifyN7F2V1(b *testing.B) {
+func BenchmarkAPVSSCompactFallbackVerifyN7F2Legacy(b *testing.B) {
 	fixture := apvssFixture(b, 7, 2)
 	proof, err := apvssProveCompactFallback(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {
@@ -357,7 +357,7 @@ func BenchmarkAPVSSCompactFallbackVerifyN7F2V1(b *testing.B) {
 	b.ReportMetric(float64(len(wire)), "proof_bytes")
 }
 
-func benchmarkAPVSSFullCompactV1(b *testing.B, receivers, faults int, verify bool) {
+func benchmarkAPVSSFullCompactLegacy(b *testing.B, receivers, faults int, verify bool) {
 	fixture := apvssFixture(b, receivers, faults)
 	fixture.leaf.context.proofProfile = cvLeafFullCompactProofProfile
 	indices := make([]int, receivers)
@@ -386,31 +386,31 @@ func benchmarkAPVSSFullCompactV1(b *testing.B, receivers, faults int, verify boo
 	b.ReportMetric(float64(len(wire)), "proof_bytes")
 }
 
-func BenchmarkAPVSSFullCompactProveN4F1V1(b *testing.B) {
-	benchmarkAPVSSFullCompactV1(b, 4, 1, false)
+func BenchmarkAPVSSFullCompactProveN4F1Legacy(b *testing.B) {
+	benchmarkAPVSSFullCompactLegacy(b, 4, 1, false)
 }
 
-func BenchmarkAPVSSFullCompactVerifyN4F1V1(b *testing.B) {
-	benchmarkAPVSSFullCompactV1(b, 4, 1, true)
+func BenchmarkAPVSSFullCompactVerifyN4F1Legacy(b *testing.B) {
+	benchmarkAPVSSFullCompactLegacy(b, 4, 1, true)
 }
 
-func BenchmarkAPVSSFullCompactProveN7F2V1(b *testing.B) {
-	benchmarkAPVSSFullCompactV1(b, 7, 2, false)
+func BenchmarkAPVSSFullCompactProveN7F2Legacy(b *testing.B) {
+	benchmarkAPVSSFullCompactLegacy(b, 7, 2, false)
 }
 
-func BenchmarkAPVSSFullCompactVerifyN7F2V1(b *testing.B) {
-	benchmarkAPVSSFullCompactV1(b, 7, 2, true)
+func BenchmarkAPVSSFullCompactVerifyN7F2Legacy(b *testing.B) {
+	benchmarkAPVSSFullCompactLegacy(b, 7, 2, true)
 }
 
-func BenchmarkAPVSSFullCompactProveN16F5V1(b *testing.B) {
-	benchmarkAPVSSFullCompactV1(b, 16, 5, false)
+func BenchmarkAPVSSFullCompactProveN16F5Legacy(b *testing.B) {
+	benchmarkAPVSSFullCompactLegacy(b, 16, 5, false)
 }
 
-func BenchmarkAPVSSFullCompactVerifyN16F5V1(b *testing.B) {
-	benchmarkAPVSSFullCompactV1(b, 16, 5, true)
+func BenchmarkAPVSSFullCompactVerifyN16F5Legacy(b *testing.B) {
+	benchmarkAPVSSFullCompactLegacy(b, 16, 5, true)
 }
 
-func benchmarkAPVSSFullFieldCongruentV1(b *testing.B, receivers, faults int, verify bool) {
+func benchmarkAPVSSFullFieldCongruentLegacy(b *testing.B, receivers, faults int, verify bool) {
 	fixture := apvssFixture(b, receivers, faults)
 	fixture.leaf.context.proofProfile = cvLeafFullFieldProofProfile
 	indices := make([]int, receivers)
@@ -439,15 +439,15 @@ func benchmarkAPVSSFullFieldCongruentV1(b *testing.B, receivers, faults int, ver
 	b.ReportMetric(float64(len(wire)), "proof_bytes")
 }
 
-func BenchmarkAPVSSFullFieldCongruentProveN16F5V1(b *testing.B) {
-	benchmarkAPVSSFullFieldCongruentV1(b, 16, 5, false)
+func BenchmarkAPVSSFullFieldCongruentProveN16F5Legacy(b *testing.B) {
+	benchmarkAPVSSFullFieldCongruentLegacy(b, 16, 5, false)
 }
 
-func BenchmarkAPVSSFullFieldCongruentVerifyN16F5V1(b *testing.B) {
-	benchmarkAPVSSFullFieldCongruentV1(b, 16, 5, true)
+func BenchmarkAPVSSFullFieldCongruentVerifyN16F5Legacy(b *testing.B) {
+	benchmarkAPVSSFullFieldCongruentLegacy(b, 16, 5, true)
 }
 
-func TestAPVSSFullFieldCongruentRoundTripV1(t *testing.T) {
+func TestAPVSSFullFieldCongruentRoundTripLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 4, 1)
 	fixture.leaf.context.proofProfile = cvLeafFullFieldProofProfile
 	indices := []int{1, 2, 3, 4}
@@ -487,7 +487,7 @@ func TestAPVSSFullFieldCongruentRoundTripV1(t *testing.T) {
 	}
 }
 
-func TestAPVSSCompactFallbackRejectsMutationV1(t *testing.T) {
+func TestAPVSSCompactFallbackRejectsMutationLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	proof, err := apvssProveCompactFallback(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {
@@ -543,7 +543,7 @@ func TestAPVSSCompactFallbackRejectsMutationV1(t *testing.T) {
 	})
 }
 
-func TestAPVSSCompactComparatorRejectsSPlusQDigitsV1(t *testing.T) {
+func TestAPVSSCompactComparatorRejectsSPlusQDigitsLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	_, _, chunks, err := cvProfile(fixture.context.profile)
 	if err != nil {

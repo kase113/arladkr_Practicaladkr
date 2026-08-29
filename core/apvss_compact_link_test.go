@@ -21,7 +21,7 @@ func apvssCloneCompactLinkProofForTest(in *apvssCompactLinkProof) *apvssCompactL
 	return out
 }
 
-func TestAPVSSCompactLinkProofV1(t *testing.T) {
+func TestAPVSSCompactLinkProofLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	proof, err := apvssProveCompactLink(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {
@@ -60,7 +60,7 @@ func TestAPVSSCompactLinkProofV1(t *testing.T) {
 	}
 }
 
-func TestAPVSSCompactLinkProofRejectsMutationV1(t *testing.T) {
+func TestAPVSSCompactLinkProofRejectsMutationLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	proof, err := apvssProveCompactLink(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {
@@ -124,7 +124,7 @@ func TestAPVSSCompactLinkProofRejectsMutationV1(t *testing.T) {
 	})
 }
 
-func BenchmarkAPVSSCompactLinkProveN7F2V1(b *testing.B) {
+func BenchmarkAPVSSCompactLinkProveN7F2Legacy(b *testing.B) {
 	fixture := apvssFixture(b, 7, 2)
 	proof, err := apvssProveCompactLink(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {
@@ -143,7 +143,7 @@ func BenchmarkAPVSSCompactLinkProveN7F2V1(b *testing.B) {
 	b.ReportMetric(float64(proofBytes), "link_proof_bytes")
 }
 
-func BenchmarkAPVSSCompactLinkVerifyN7F2V1(b *testing.B) {
+func BenchmarkAPVSSCompactLinkVerifyN7F2Legacy(b *testing.B) {
 	fixture := apvssFixture(b, 7, 2)
 	proof, err := apvssProveCompactLink(fixture.leaf, &fixture.witness, []int{1, 2})
 	if err != nil {

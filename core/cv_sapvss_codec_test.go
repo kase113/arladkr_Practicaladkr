@@ -183,7 +183,7 @@ func TestCVLeafCodecRoundTripWithMultipleReceiversAndDegree(t *testing.T) {
 	}
 }
 
-func TestCVStructuralV2WireRejectsLegacyBlindingFields(t *testing.T) {
+func TestCVStructuralScalarWireRejectsLegacyBlindingFields(t *testing.T) {
 	fixture := apvssFixture(t, 1, 0)
 
 	t.Run("legacy profile", func(t *testing.T) {

@@ -8,14 +8,8 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 )
 
-// The gnark compressed-point decoder runs an order-r scalar multiplication per
-// point (IsInSubGroup). A leaf wire carries thousands of points, so the catalog
-// verification path decodes without that check and validates subgroup
-// membership once per decode unit with a Fiat-Shamir linear combination: if
-// any decoded point lies outside the prime-order subgroup the combination does
-// too, except with probability at most len(points)/r, which is negligible for
-// wire-sized batches. Mask semantics mirror gnark's marshal format exactly so
-// canonical bytes keep their existing interpretation.
+// Point decoding defers subgroup checks and validates each decode unit with a
+// Fiat-Shamir linear combination. Canonical gnark mask semantics are preserved.
 const (
 	cvG1Mask                 byte = 0b111 << 5
 	cvG1Uncompressed         byte = 0b000 << 5
@@ -42,10 +36,8 @@ func cvG1BufferZeroed(firstByte byte, buf []byte) bool {
 	return true
 }
 
-// cvDecodeG1WireUnchecked decodes one canonical gnark-format G1 point without
-// the per-point subgroup check. Infinity and all compression masks keep gnark
-// semantics; callers must batch-validate subgroup membership via
-// cvAssertG1SubgroupBatch before trusting the decoded points.
+// cvDecodeG1WireUnchecked decodes canonical G1 bytes without a subgroup check.
+// Callers must subsequently call cvAssertG1SubgroupBatch.
 func cvDecodeG1WireUnchecked(encoded []byte) (bls12381.G1Affine, error) {
 	if len(encoded) < bls12381.SizeOfG1AffineCompressed {
 		return bls12381.G1Affine{}, io.ErrShortBuffer
@@ -116,13 +108,8 @@ func cvDecodeG1WireUnchecked(encoded []byte) (bls12381.G1Affine, error) {
 	return point, nil
 }
 
-// cvAssertG1SubgroupBatch validates subgroup membership for decoded points
-// with a single Fiat-Shamir linear combination and one order-r check. The
-// challenge is hashed from the exact point set, so the coefficients exist only
-// after the encoder has fixed its points; a malformed encoder cannot predict
-// them any better than it could predict an independent draw, while hashing
-// avoids a kernel-CSPRNG syscall per point that serializes concurrent
-// verifiers on the same host.
+// cvAssertG1SubgroupBatch validates decoded points with one Fiat-Shamir linear
+// combination and one order-r check.
 func cvAssertG1SubgroupBatch(points []bls12381.G1Affine) error {
 	var combined bls12381.G1Affine
 	nonInfinity := 0
@@ -144,12 +131,12 @@ func cvAssertG1SubgroupBatch(points []bls12381.G1Affine) error {
 		encoded := batch[len(batch)-1].Bytes()
 		statement = append(statement, encoded[:]...)
 	}
-	challenge, err := cvHashToFr(cvSubgroupBatchChallengeDomainV2, statement)
+	challenge, err := cvHashToFr(cvSubgroupBatchChallengeDomainScalar, statement)
 	if err != nil {
 		return err
 	}
 	if challenge.IsZero() {
-		challenge, err = cvHashToFr(cvSubgroupBatchChallengeDomainV2, statement, []byte("nonzero"))
+		challenge, err = cvHashToFr(cvSubgroupBatchChallengeDomainScalar, statement, []byte("nonzero"))
 		if err != nil {
 			return err
 		}
@@ -169,7 +156,7 @@ func cvAssertG1SubgroupBatch(points []bls12381.G1Affine) error {
 	return nil
 }
 
-const cvSubgroupBatchChallengeDomainV2 = "CV-V2-SUBGROUP-BATCH-v1"
+const cvSubgroupBatchChallengeDomainScalar = "CV-V2-SUBGROUP-BATCH-v1"
 
 func (r *cvWireReader) pointDeferred() (bls12381.G1Affine, error) {
 	encoded := r.scratch[:bls12381.SizeOfG1AffineCompressed]
@@ -203,11 +190,7 @@ func (r *cvWireReader) ciphertextDeferred() (cvElGamalCiphertext, error) {
 	return cvElGamalCiphertext{r: first, c: second}, nil
 }
 
-// assertDecodedSubgroup finishes the deferred batch subgroup check for every
-// point decoded through pointDeferred/ciphertextDeferred on this reader. When
-// the reader shares a leaf-level sidechannel, the points instead move to the
-// side's collector so the whole leaf pays one linear combination and one
-// order-r check.
+// assertDecodedSubgroup completes deferred subgroup validation for the reader.
 func (r *cvWireReader) assertDecodedSubgroup() error {
 	if len(r.deferredPoints) == 0 {
 		return nil

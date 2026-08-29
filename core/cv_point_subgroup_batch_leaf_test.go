@@ -31,17 +31,17 @@ func TestCVLeafWideSubgroupBatchRejectsPlantedOutsider(t *testing.T) {
 		OldFaults: f, NewFaults: f,
 		CVProposerSampleSize: 3, CVValidatorSampleSize: 3,
 	}
-	params, err := cvDeriveV2Params(cfg)
+	params, err := cvDeriveScalarParams(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	keyRoot := t.TempDir()
 	receiverPublic := filepath.Join(keyRoot, "receiver-public")
 	receiverSecret := filepath.Join(keyRoot, "receiver-secret")
-	if err := cvGenerateReceiverRegistryV2(receiverPublic, receiverSecret, cfg.SID, uint64(cfg.Epoch), newRoster); err != nil {
+	if err := cvGenerateReceiverRegistryScalar(receiverPublic, receiverSecret, cfg.SID, uint64(cfg.Epoch), newRoster); err != nil {
 		t.Fatal(err)
 	}
-	receivers, err := cvLoadReceiverRegistryV2(
+	receivers, err := cvLoadReceiverRegistryScalar(
 		receiverPublic, receiverSecret, cfg.SID, uint64(cfg.Epoch), newRoster, newRoster,
 	)
 	if err != nil {
@@ -49,45 +49,45 @@ func TestCVLeafWideSubgroupBatchRejectsPlantedOutsider(t *testing.T) {
 	}
 	validatorPublic := filepath.Join(keyRoot, "validator-public")
 	validatorSecret := filepath.Join(keyRoot, "validator-secret")
-	if err := cvGenerateValidatorRegistryV2(validatorPublic, validatorSecret, cfg.SID, uint64(cfg.Epoch), oldRoster); err != nil {
+	if err := cvGenerateValidatorRegistryScalar(validatorPublic, validatorSecret, cfg.SID, uint64(cfg.Epoch), oldRoster); err != nil {
 		t.Fatal(err)
 	}
-	validators, err := cvLoadValidatorRegistryV2(
+	validators, err := cvLoadValidatorRegistryScalar(
 		validatorPublic, validatorSecret, cfg.SID, uint64(cfg.Epoch), oldRoster, oldRoster,
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	leafContext := &cvLeafContextV2{
+	leafContext := &cvLeafContextScalar{
 		SID: cfg.SID, Epoch: uint64(cfg.Epoch),
 		OldRoster: append([]int(nil), oldRoster...), NewRoster: append([]int(nil), newRoster...),
 		ReceiverRegistryDigest: append([]byte(nil), receivers.registryDigest...),
 		SharingDegree:          params.newShareDegree,
 		Profile:                cvChunkProfile{chunkBits: 8, maxComponents: params.componentCount},
 	}
-	leaf, err := cvBuildReferenceAllACKLeafV2(oldRoster[0], leafContext, receivers, validators)
+	leaf, err := cvBuildReferenceAllACKLeafScalar(oldRoster[0], leafContext, receivers, validators)
 	if err != nil {
 		t.Fatal(err)
 	}
-	payload, err := cvLeafV2CanonicalBytesAfterValidation(leaf, receivers, validators)
+	payload, err := cvLeafScalarCanonicalBytesAfterValidation(leaf, receivers, validators)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := cvDecodeLeafV2Sidechannel(payload, nil, leafContext, receivers, validators); err != nil {
+	if _, err := cvDecodeLeafScalarSidechannel(payload, nil, leafContext, receivers, validators); err != nil {
 		t.Fatalf("clean leaf failed to decode: %v", err)
 	}
 
 	outsider := cvRandomCurvePointOutsideSubgroup(t)
 	leaf.CoefficientCommitments[0] = outsider
-	unsigned, err := cvLeafV2UnsignedCanonicalBytesAfterValidation(leaf, receivers)
+	unsigned, err := cvLeafScalarUnsignedCanonicalBytesAfterValidation(leaf, receivers)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var wire bytes.Buffer
-	_ = cvWriteBytes(&wire, []byte(cvLeafWireDomainV2))
+	_ = cvWriteBytes(&wire, []byte(cvLeafWireDomainScalar))
 	_ = cvWriteBytes(&wire, unsigned)
 	_ = cvWriteBytes(&wire, bytes.Repeat([]byte{0xA5}, 48))
-	_, err = cvDecodeLeafV2Sidechannel(wire.Bytes(), nil, leafContext, receivers, validators)
+	_, err = cvDecodeLeafScalarSidechannel(wire.Bytes(), nil, leafContext, receivers, validators)
 	if err == nil {
 		t.Fatal("leaf decode accepted a planted non-subgroup commitment")
 	}
@@ -111,7 +111,7 @@ func TestCVDecodeSidechannelSubgroupCollector(t *testing.T) {
 	}
 	outsider := cvRandomCurvePointOutsideSubgroup(t)
 
-	side := &cvDecodeSidechannelV2{collectSubgroup: true}
+	side := &cvDecodeSidechannelScalar{collectSubgroup: true}
 	first := newCVWireReaderSide(valid, side)
 	for range 2 {
 		if _, err := first.pointDeferred(); err != nil {

@@ -82,17 +82,17 @@ func TestCVRecoveryServiceWorkerBudget(t *testing.T) {
 	}
 }
 
-func TestCVACKSettleGraceV2IsBoundedAndConfigurable(t *testing.T) {
+func TestCVACKSettleGraceScalarIsBoundedAndConfigurable(t *testing.T) {
 	t.Setenv("RLADKR_ACK_SETTLE_GRACE_MS", "")
-	if got := cvACKSettleGraceV2(); got != cvDefaultACKSettleGraceV2 {
-		t.Fatalf("default ACK settle grace=%s, want %s", got, cvDefaultACKSettleGraceV2)
+	if got := cvACKSettleGraceScalar(); got != cvDefaultACKSettleGraceScalar {
+		t.Fatalf("default ACK settle grace=%s, want %s", got, cvDefaultACKSettleGraceScalar)
 	}
 	t.Setenv("RLADKR_ACK_SETTLE_GRACE_MS", "0")
-	if got := cvACKSettleGraceV2(); got != 0 {
+	if got := cvACKSettleGraceScalar(); got != 0 {
 		t.Fatalf("disabled ACK settle grace=%s", got)
 	}
 	t.Setenv("RLADKR_ACK_SETTLE_GRACE_MS", "1000")
-	if got := cvACKSettleGraceV2(); got != 250*time.Millisecond {
+	if got := cvACKSettleGraceScalar(); got != 250*time.Millisecond {
 		t.Fatalf("capped ACK settle grace=%s, want 250ms", got)
 	}
 }

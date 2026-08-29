@@ -169,7 +169,7 @@ type benchResultInput struct {
 	requiredCompleted          int
 	ablationMode               string
 	commMetrics                bool
-	cvSampling                 core.CVV2SamplingReport
+	cvSampling                 core.CVScalarSamplingReport
 	cvSamplingEpochs           int
 	cvSamplingUnionBound       string
 	stats                      []runStat
@@ -181,12 +181,13 @@ func main() {
 		f                        = flag.Int("f", 1, "common default Byzantine threshold for both committees")
 		fOld                     = flag.Int("f-old", -1, "old-committee Byzantine threshold (-1 = use --f)")
 		fNew                     = flag.Int("f-new", -1, "new-committee Byzantine threshold (-1 = use --f)")
-		cvProposerSample         = flag.Int("cv-proposer-sample", 3, "CV V2 eligibility proposer sample size")
-		cvValidatorSample        = flag.Int("cv-validator-sample", 3, "CV V2 aggregate validator sample size")
-		cvFailureTarget          = flag.String("cv-failure-target", "smoke", "CV V2 total sampling budget: smoke|original|high-assurance|1e-*|2^-*")
+		cvProposerSample         = flag.Int("cv-proposer-sample", 3, "scalar CV eligibility proposer sample size")
+		cvValidatorSample        = flag.Int("cv-validator-sample", 3, "scalar CV aggregate validator sample size")
+		cvFailureTarget          = flag.String("cv-failure-target", "smoke", "scalar CV total sampling budget: smoke|original|high-assurance|1e-*|2^-*")
 		kappa                    = flag.Int("kappa", 0, "aggregate dealer count (0 = f_old+1; other values are rejected)")
-		runs                     = flag.Int("runs", 1, "number of benchmark runs (V2 fresh-epoch experiment requires 1)")
-		epochs                   = flag.Int("epochs", 1, "number of epochs (V2 fresh-epoch experiment requires 1)")
+		runs                     = flag.Int("runs", 1, "number of benchmark runs (fresh-epoch mode requires 1)")
+		epochs                   = flag.Int("epochs", 1, "number of epochs (fresh-epoch mode requires 1)")
+		epochID                  = flag.Int("epoch", 1, "epoch identifier for this fresh run")
 		transport                = flag.String("transport", "tcp-distributed", "agreement transport: tcp-distributed|tcp-loopback")
 		bindHost                 = flag.String("bind-host", "0.0.0.0", "tcp bind host")
 		basePort                 = flag.Int("base-port", 0, "deterministic base port for node listeners when >0")
@@ -202,14 +203,14 @@ func main() {
 		precomputeRuntime        = flag.Bool("precompute-runtime", true, "prepare deterministic runtime/key material before protocol timing")
 		startAt                  = flag.Int64("start-at", 0, "unix timestamp to synchronise start across nodes (0 = start immediately)")
 		prepareOnly              = flag.Bool("prepare-only", false, "prepare deterministic runtime material and exit")
-		ablationMode             = flag.String("ablation-mode", "none", "reserved result field; CV V2 only accepts none")
+		ablationMode             = flag.String("ablation-mode", "none", "reserved result field; scalar CV only accepts none")
 		commMetrics              = flag.Bool("comm-metrics", true, "enable protocol-layer communication byte counters")
 		strictNetwork            = flag.Bool("strict-network", envBoolDefault("RLADKR_STRICT_NETWORK", true), "fail if benchmark config selects local/cache protocol shortcuts")
 		cvPublicKeyDir           = flag.String("cv-public-key-dir", os.Getenv("RLADKR_CV_PUBLIC_KEY_DIR"), "CV public receiver registry directory")
 		cvLocalSecretDir         = flag.String("cv-local-secret-dir", os.Getenv("RLADKR_CV_LOCAL_SECRET_DIR"), "CV local receiver secret directory")
 		cvLocalReceiverRaw       = flag.String("cv-local-receiver-ids", os.Getenv("RLADKR_LOCAL_RECEIVER_IDS"), "comma-separated local new-committee receiver IDs")
-		cvKeygenOnly             = flag.Bool("cv-keygen-only", false, "generate CV V2 key material and exit")
-		cvKeygenEpoch            = flag.Int("cv-keygen-epoch", 1, "epoch bound into generated CV V2 key material")
+		cvKeygenOnly             = flag.Bool("cv-keygen-only", false, "generate scalar CV key material and exit")
+		cvKeygenEpoch            = flag.Int("cv-keygen-epoch", 1, "epoch bound into generated scalar CV key material")
 	)
 	flag.Parse()
 	if *fOld < -1 || *fNew < -1 {
@@ -233,6 +234,9 @@ func main() {
 	flag.Visit(func(f *flag.Flag) {
 		visited[f.Name] = true
 	})
+	if !visited["cv-keygen-epoch"] {
+		*cvKeygenEpoch = *epochID
+	}
 	apvssFallbackProfileName := strings.ToLower(strings.TrimSpace(*apvssFallbackProfile))
 	apvssFullProofProfileName := strings.ToLower(strings.TrimSpace(*apvssFullProofProfile))
 	apvssModeName := core.NormalizeConfig(core.Config{APVSSMode: *apvssMode}).APVSSMode
@@ -244,6 +248,10 @@ func main() {
 	if *epochs <= 0 {
 		*epochs = 1
 	}
+	if *epochID <= 0 {
+		fmt.Fprintln(os.Stderr, "epoch must be positive")
+		os.Exit(1)
+	}
 
 	old := make([]int, *n)
 	newC := make([]int, *n)
@@ -251,7 +259,7 @@ func main() {
 		old[i] = i
 		newC[i] = *n + i
 	}
-	sampling, err := core.ResolveCVV2Sampling(*n, oldFaults, *cvFailureTarget, *cvProposerSample, *cvValidatorSample)
+	sampling, err := core.ResolveCVScalarSampling(*n, oldFaults, *cvFailureTarget, *cvProposerSample, *cvValidatorSample)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CV_V2_SAMPLING_ERROR err=%v\n", err)
 		return
@@ -277,7 +285,7 @@ func main() {
 			fmt.Fprintln(os.Stderr, "CV_V2_KEYGEN_ERROR epoch must be positive")
 			os.Exit(1)
 		}
-		v2KeyConfig := core.Config{
+		scalarKeyConfig := core.Config{
 			SID: "rladkr-go-bench", Epoch: *cvKeygenEpoch,
 			OldCommittee: old, NewCommittee: newC,
 			FOld: oldFaults, FNew: newFaults,
@@ -286,26 +294,26 @@ func main() {
 			CVProposerSampleSize: *cvProposerSample, CVValidatorSampleSize: *cvValidatorSample,
 			CVSamplingFailureTarget: sampling.Target,
 		}
-		if err := core.GenerateCVV2KeyMaterial(*cvPublicKeyDir, *cvLocalSecretDir, v2KeyConfig); err != nil {
+		if err := core.GenerateCVScalarKeyMaterial(*cvPublicKeyDir, *cvLocalSecretDir, scalarKeyConfig); err != nil {
 			fmt.Fprintf(os.Stderr, "CV_V2_KEYGEN_ERROR err=%v\n", err)
 			os.Exit(1)
 		}
-		v2SetupBundleDigest, err := core.CVV2SetupBundleDigest(*cvPublicKeyDir)
+		scalarSetupBundleDigest, err := core.CVScalarSetupBundleDigest(*cvPublicKeyDir)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "CV_V2_KEYGEN_ERROR err=%v\n", err)
 			os.Exit(1)
 		}
 		fmt.Printf(
 			"CV_V2_KEYGEN_OK public_dir=%s secret_dir=%s receivers=%d epoch=%d setup_bundle_digest=%s\n",
-			*cvPublicKeyDir, *cvLocalSecretDir, len(newC), *cvKeygenEpoch, v2SetupBundleDigest,
+			*cvPublicKeyDir, *cvLocalSecretDir, len(newC), *cvKeygenEpoch, scalarSetupBundleDigest,
 		)
 		return
 	}
-	if err := validateCVV2BenchmarkShape(*runs, *epochs); err != nil {
+	if err := validateCVScalarBenchmarkShape(*runs, *epochs); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
-	setupBundleDigest, err := core.CVV2SetupBundleDigest(*cvPublicKeyDir)
+	setupBundleDigest, err := core.CVScalarSetupBundleDigest(*cvPublicKeyDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CV_V2_SETUP_VERIFY_ERROR err=%v\n", err)
 		os.Exit(1)
@@ -315,7 +323,7 @@ func main() {
 	if *prepareOnly {
 		cfg := core.NormalizeConfig(core.Config{
 			SID:                         "rladkr-go-bench",
-			Epoch:                       1,
+			Epoch:                       *epochID,
 			OldCommittee:                old,
 			NewCommittee:                newC,
 			FOld:                        oldFaults,
@@ -366,7 +374,7 @@ func main() {
 		}
 		runSuccess := true
 		for epoch := 1; epoch <= *epochs; epoch++ {
-			globalEpoch := i*(*epochs) + epoch
+			globalEpoch := *epochID + i*(*epochs) + epoch - 1
 			cfg := core.NormalizeConfig(core.Config{
 				SID:                         "rladkr-go-bench",
 				Epoch:                       globalEpoch,
@@ -645,7 +653,7 @@ func main() {
 			backendStatus = "functional-prototype-backend-gate-pending"
 		}
 	}
-	samplingUnionBound, err := core.CVV2SamplingUnionBound(sampling, len(stats))
+	samplingUnionBound, err := core.CVScalarSamplingUnionBound(sampling, len(stats))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "CV_V2_SAMPLING_ERROR err=%v\n", err)
 		return
@@ -695,7 +703,7 @@ func main() {
 	}
 }
 
-func validateCVV2BenchmarkShape(runs, epochs int) error {
+func validateCVScalarBenchmarkShape(runs, epochs int) error {
 	if runs != 1 || epochs != 1 {
 		return fmt.Errorf("CV V2 benchmark supports exactly one fresh run and one epoch; key rotation and incomplete-epoch resume are unsupported")
 	}

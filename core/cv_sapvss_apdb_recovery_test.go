@@ -6,53 +6,53 @@ import (
 	"testing"
 )
 
-func TestCVAPDBPayloadResponseV2TransportCompressionRoundTrip(t *testing.T) {
+func TestCVAPDBPayloadResponseScalarTransportCompressionRoundTrip(t *testing.T) {
 	instance := bytes.Repeat([]byte{0x42}, 32)
 	block := make([]byte, 5400)
 	for i := range block {
 		block[i] = byte((i*131 + 17) % 251)
 	}
 	payload := append(append([]byte(nil), block...), block...)
-	response := &cvAPDBPayloadResponseV2{InstanceDigest: instance, Payload: payload}
-	legacy, err := cvAPDBPayloadResponseV2CanonicalBytes(response)
+	response := &cvAPDBPayloadResponseScalar{InstanceDigest: instance, Payload: payload}
+	legacy, err := cvAPDBPayloadResponseScalarCanonicalBytes(response)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire, err := cvAPDBPayloadResponseV2TransportBytes(response)
+	wire, err := cvAPDBPayloadResponseScalarTransportBytes(response)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(wire) >= len(legacy) {
 		t.Fatalf("transport compression did not reduce duplicated payload: compressed=%d legacy=%d", len(wire), len(legacy))
 	}
-	decoded, err := cvDecodeAPDBPayloadResponseV2(wire, len(payload))
+	decoded, err := cvDecodeAPDBPayloadResponseScalar(wire, len(payload))
 	if err != nil || !bytes.Equal(decoded.InstanceDigest, instance) || !bytes.Equal(decoded.Payload, payload) {
 		t.Fatalf("compressed payload round trip failed: err=%v", err)
 	}
-	if _, err := cvDecodeAPDBPayloadResponseV2(wire[:len(wire)-1], len(payload)); err == nil {
+	if _, err := cvDecodeAPDBPayloadResponseScalar(wire[:len(wire)-1], len(payload)); err == nil {
 		t.Fatal("accepted truncated compressed payload response")
 	}
 }
 
-func TestCVAPDBRecoveryCollectorV2RequestsAllHoldersAndReconstructs(t *testing.T) {
-	_, public := cvAgreementObjectV2Fixture(t)
+func TestCVAPDBRecoveryCollectorScalarRequestsAllHoldersAndReconstructs(t *testing.T) {
+	_, public := cvAgreementObjectScalarFixture(t)
 	payload := []byte("validated all-holder APDB recovery")
-	instance, err := cvAPDBInstanceDigestV2("COMP", []byte("recovery collector"))
+	instance, err := cvAPDBInstanceDigestScalar("COMP", []byte("recovery collector"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := cvAPDBEncodeV2(instance, payload, public.Params.recoveryThreshold, len(public.OldCommittee), 1024)
+	encoded, err := cvAPDBEncodeScalar(instance, payload, public.Params.recoveryThreshold, len(public.OldCommittee), 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	statement, err := cvAPDBStoredStatementV2(instance, encoded.root)
+	statement, err := cvAPDBStoredStatementScalar(instance, encoded.root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lock := &cvAPDBLockV2{InstanceDigest: instance, Root: encoded.root,
-		Certificate: cvRecoverThresholdCertificateV2ForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, statement)}
+	lock := &cvAPDBLockScalar{InstanceDigest: instance, Root: encoded.root,
+		Certificate: cvRecoverThresholdCertificateScalarForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, statement)}
 	bindingChecked := false
-	collector, err := newCVAPDBRecoveryCollectorV2(lock, public.OldCommittee, public.Params.recoveryThreshold,
+	collector, err := newCVAPDBRecoveryCollectorScalar(lock, public.OldCommittee, public.Params.recoveryThreshold,
 		encoded.shardBytes, 1024, public.APDBSigner, func(got []byte) error {
 			if !bytes.Equal(got, payload) {
 				t.Fatal("binding check received the wrong payload")
@@ -70,7 +70,7 @@ func TestCVAPDBRecoveryCollectorV2RequestsAllHoldersAndReconstructs(t *testing.T
 		t.Fatal("recovered before collecting the threshold")
 	}
 	for index := 0; index < public.Params.recoveryThreshold; index++ {
-		wire, err := cvAPDBStoreV2CanonicalBytes(&encoded.stores[index], len(public.OldCommittee), encoded.shardBytes)
+		wire, err := cvAPDBStoreScalarCanonicalBytes(&encoded.stores[index], len(public.OldCommittee), encoded.shardBytes)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -94,29 +94,29 @@ func TestCVAPDBRecoveryCollectorV2RequestsAllHoldersAndReconstructs(t *testing.T
 	}
 }
 
-func TestCVAPDBRecoveryCollectorV2ReportsAuthenticatedPayloadSource(t *testing.T) {
-	_, public := cvAgreementObjectV2Fixture(t)
+func TestCVAPDBRecoveryCollectorScalarReportsAuthenticatedPayloadSource(t *testing.T) {
+	_, public := cvAgreementObjectScalarFixture(t)
 	payload := []byte("authenticated payload fast path")
-	instance, err := cvAPDBInstanceDigestV2("COMP", []byte("payload source"))
+	instance, err := cvAPDBInstanceDigestScalar("COMP", []byte("payload source"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := cvAPDBEncodeV2(instance, payload, public.Params.recoveryThreshold, len(public.OldCommittee), 1024)
+	encoded, err := cvAPDBEncodeScalar(instance, payload, public.Params.recoveryThreshold, len(public.OldCommittee), 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	statement, err := cvAPDBStoredStatementV2(instance, encoded.root)
+	statement, err := cvAPDBStoredStatementScalar(instance, encoded.root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lock := &cvAPDBLockV2{InstanceDigest: instance, Root: encoded.root,
-		Certificate: cvRecoverThresholdCertificateV2ForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, statement)}
-	collector, err := newCVAPDBRecoveryCollectorV2(lock, public.OldCommittee, public.Params.recoveryThreshold,
+	lock := &cvAPDBLockScalar{InstanceDigest: instance, Root: encoded.root,
+		Certificate: cvRecoverThresholdCertificateScalarForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, statement)}
+	collector, err := newCVAPDBRecoveryCollectorScalar(lock, public.OldCommittee, public.Params.recoveryThreshold,
 		encoded.shardBytes, 1024, public.APDBSigner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	response, err := cvAPDBPayloadResponseV2CanonicalBytes(&cvAPDBPayloadResponseV2{
+	response, err := cvAPDBPayloadResponseScalarCanonicalBytes(&cvAPDBPayloadResponseScalar{
 		InstanceDigest: instance, Payload: payload,
 	})
 	if err != nil {
@@ -125,7 +125,7 @@ func TestCVAPDBRecoveryCollectorV2ReportsAuthenticatedPayloadSource(t *testing.T
 	if complete, err := collector.AddPayload(public.OldCommittee[0], response); err != nil || !complete {
 		t.Fatalf("add payload response: complete=%v err=%v", complete, err)
 	}
-	decoded, err := cvDecodeAPDBPayloadResponseV2(response, 1024)
+	decoded, err := cvDecodeAPDBPayloadResponseScalar(response, 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -147,30 +147,30 @@ func TestCVAPDBRecoveryCollectorV2ReportsAuthenticatedPayloadSource(t *testing.T
 	}
 }
 
-func TestCVAPDBRecoveryCollectorV2OwnedPayloadTransfer(t *testing.T) {
-	_, public := cvAgreementObjectV2Fixture(t)
+func TestCVAPDBRecoveryCollectorScalarOwnedPayloadTransfer(t *testing.T) {
+	_, public := cvAgreementObjectScalarFixture(t)
 	payload := []byte("owned payload response")
-	instance, err := cvAPDBInstanceDigestV2("COMP", []byte("owned payload"))
+	instance, err := cvAPDBInstanceDigestScalar("COMP", []byte("owned payload"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := cvAPDBEncodeV2(instance, payload, public.Params.recoveryThreshold, len(public.OldCommittee), 1024)
+	encoded, err := cvAPDBEncodeScalar(instance, payload, public.Params.recoveryThreshold, len(public.OldCommittee), 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	statement, err := cvAPDBStoredStatementV2(instance, encoded.root)
+	statement, err := cvAPDBStoredStatementScalar(instance, encoded.root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	lock := &cvAPDBLockV2{InstanceDigest: instance, Root: encoded.root,
-		Certificate: cvRecoverThresholdCertificateV2ForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, statement)}
-	collector, err := newCVAPDBRecoveryCollectorV2(lock, public.OldCommittee, public.Params.recoveryThreshold,
+	lock := &cvAPDBLockScalar{InstanceDigest: instance, Root: encoded.root,
+		Certificate: cvRecoverThresholdCertificateScalarForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, statement)}
+	collector, err := newCVAPDBRecoveryCollectorScalar(lock, public.OldCommittee, public.Params.recoveryThreshold,
 		encoded.shardBytes, 1024, public.APDBSigner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	hints := []byte(nil)
-	response := &cvAPDBPayloadResponseV2{InstanceDigest: instance, Payload: payload, Hints: hints}
+	response := &cvAPDBPayloadResponseScalar{InstanceDigest: instance, Payload: payload, Hints: hints}
 	if complete, err := collector.addDecodedPayloadOwned(response); err != nil || !complete {
 		t.Fatalf("owned payload response: complete=%v err=%v", complete, err)
 	}
@@ -180,9 +180,9 @@ func TestCVAPDBRecoveryCollectorV2OwnedPayloadTransfer(t *testing.T) {
 	}
 }
 
-func TestCVAPDBRecoveryCollectorV2RejectsSenderAndStoreMutations(t *testing.T) {
-	object, public := cvAgreementObjectV2Fixture(t)
-	collector, err := newCVAPDBRecoveryCollectorV2(&object.ARC, public.OldCommittee, public.Params.recoveryThreshold,
+func TestCVAPDBRecoveryCollectorScalarRejectsSenderAndStoreMutations(t *testing.T) {
+	object, public := cvAgreementObjectScalarFixture(t)
+	collector, err := newCVAPDBRecoveryCollectorScalar(&object.ARC, public.OldCommittee, public.Params.recoveryThreshold,
 		32, 1024, public.APDBSigner, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +191,7 @@ func TestCVAPDBRecoveryCollectorV2RejectsSenderAndStoreMutations(t *testing.T) {
 	for i := range wrongRoster {
 		wrongRoster[i] += 100
 	}
-	if _, err := newCVAPDBRecoveryCollectorV2(&object.ARC, wrongRoster, public.Params.recoveryThreshold,
+	if _, err := newCVAPDBRecoveryCollectorScalar(&object.ARC, wrongRoster, public.Params.recoveryThreshold,
 		32, 1024, public.APDBSigner, nil); err == nil {
 		t.Fatal("accepted a holder roster different from the APDB signer roster")
 	}
@@ -199,24 +199,24 @@ func TestCVAPDBRecoveryCollectorV2RejectsSenderAndStoreMutations(t *testing.T) {
 		t.Fatal("accepted APDB response from a non-holder")
 	}
 
-	instance, err := cvAPDBInstanceDigestV2("COMP", []byte("sender binding"))
+	instance, err := cvAPDBInstanceDigestScalar("COMP", []byte("sender binding"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := cvAPDBEncodeV2(instance, []byte("sender-bound response"), public.Params.recoveryThreshold,
+	encoded, err := cvAPDBEncodeScalar(instance, []byte("sender-bound response"), public.Params.recoveryThreshold,
 		len(public.OldCommittee), 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	statement, _ := cvAPDBStoredStatementV2(instance, encoded.root)
-	lock := &cvAPDBLockV2{InstanceDigest: instance, Root: encoded.root,
-		Certificate: cvRecoverThresholdCertificateV2ForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, statement)}
-	collector, err = newCVAPDBRecoveryCollectorV2(lock, public.OldCommittee, public.Params.recoveryThreshold,
+	statement, _ := cvAPDBStoredStatementScalar(instance, encoded.root)
+	lock := &cvAPDBLockScalar{InstanceDigest: instance, Root: encoded.root,
+		Certificate: cvRecoverThresholdCertificateScalarForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, statement)}
+	collector, err = newCVAPDBRecoveryCollectorScalar(lock, public.OldCommittee, public.Params.recoveryThreshold,
 		encoded.shardBytes, 1024, public.APDBSigner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wire, err := cvAPDBStoreV2CanonicalBytes(&encoded.stores[0], len(public.OldCommittee), encoded.shardBytes)
+	wire, err := cvAPDBStoreScalarCanonicalBytes(&encoded.stores[0], len(public.OldCommittee), encoded.shardBytes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,20 +228,20 @@ func TestCVAPDBRecoveryCollectorV2RejectsSenderAndStoreMutations(t *testing.T) {
 	}
 }
 
-func TestCVAggregateRecoveryCollectorV2RequiresDecisionAuthorization(t *testing.T) {
-	object, public := cvAgreementObjectV2Fixture(t)
-	statement, err := cvDecisionStatementV2(public.ContextDigest, &object.Header, &object.ARC)
+func TestCVAggregateRecoveryCollectorScalarRequiresDecisionAuthorization(t *testing.T) {
+	object, public := cvAgreementObjectScalarFixture(t)
+	statement, err := cvDecisionStatementScalar(public.ContextDigest, &object.Header, &object.ARC)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handoff := cvHandoffV2{ContextDigest: public.ContextDigest, Header: object.Header, ARC: object.ARC,
-		DecCert: cvRecoverThresholdCertificateV2ForTest(t, public.ControlSigner, public.OldCommittee,
-			cvDecisionCertificateV2Domain, statement)}
-	request, err := cvAggregateRecoveryRequestV2CanonicalBytes(&cvAggregateRecoveryRequestV2{Handoff: handoff})
+	handoff := cvHandoffScalar{ContextDigest: public.ContextDigest, Header: object.Header, ARC: object.ARC,
+		DecCert: cvRecoverThresholdCertificateScalarForTest(t, public.ControlSigner, public.OldCommittee,
+			cvDecisionCertificateScalarDomain, statement)}
+	request, err := cvAggregateRecoveryRequestScalarCanonicalBytes(&cvAggregateRecoveryRequestScalar{Handoff: handoff})
 	if err != nil {
 		t.Fatal(err)
 	}
-	collector, err := newCVAggregateRecoveryCollectorV2(request, public.ContextDigest, public.OldCommittee,
+	collector, err := newCVAggregateRecoveryCollectorScalar(request, public.ContextDigest, public.OldCommittee,
 		public.Params.recoveryThreshold, 32, 1024, public.APDBSigner, public.ControlSigner, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -251,7 +251,7 @@ func TestCVAggregateRecoveryCollectorV2RequiresDecisionAuthorization(t *testing.
 	}
 	bad := append([]byte(nil), request...)
 	bad[len(bad)-1] ^= 1
-	if _, err := newCVAggregateRecoveryCollectorV2(bad, public.ContextDigest, public.OldCommittee,
+	if _, err := newCVAggregateRecoveryCollectorScalar(bad, public.ContextDigest, public.OldCommittee,
 		public.Params.recoveryThreshold, 32, 1024, public.APDBSigner, public.ControlSigner, nil); err == nil {
 		t.Fatal("created aggregate recovery collector without a valid DecCert")
 	}

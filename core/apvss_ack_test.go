@@ -106,7 +106,7 @@ func apvssClonePrototypeForTest(in *apvssLeafPrototype) *apvssLeafPrototype {
 	return &out
 }
 
-func TestAPVSSPrototypeACKFallbackProfilesV1(t *testing.T) {
+func TestAPVSSPrototypeACKFallbackProfilesLegacy(t *testing.T) {
 	if testing.Short() {
 		t.Skip("experimental ACK/fallback prototype profiles")
 	}
@@ -152,7 +152,7 @@ func TestAPVSSPrototypeACKFallbackProfilesV1(t *testing.T) {
 	}
 }
 
-func TestAPVSSFallbackBackendSelectionFailsClosedV1(t *testing.T) {
+func TestAPVSSFallbackBackendSelectionFailsClosedLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	compact, err := apvssBuildPrototypeWithFallbackProfile(
 		&fixture.context,
@@ -210,7 +210,7 @@ func TestAPVSSFallbackBackendSelectionFailsClosedV1(t *testing.T) {
 	}
 }
 
-func TestAPVSSFallbackSetStatementBindingV1(t *testing.T) {
+func TestAPVSSFallbackSetStatementBindingLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	digest, err := apvssFallbackSetStatementDigest(
 		fixture.leaf,
@@ -268,7 +268,7 @@ func TestAPVSSFallbackSetStatementBindingV1(t *testing.T) {
 	}
 }
 
-func TestAPVSSFallbackWitnessRelationGateV1(t *testing.T) {
+func TestAPVSSFallbackWitnessRelationGateLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 4, 1)
 	if err := apvssValidateFallbackLaneWitness(
 		fixture.leaf,
@@ -324,7 +324,7 @@ func TestAPVSSFallbackWitnessRelationGateV1(t *testing.T) {
 	}
 }
 
-func TestAPVSSACKStrictDecryptionAndStatementBindingV1(t *testing.T) {
+func TestAPVSSACKStrictDecryptionAndStatementBindingLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 4, 1)
 	ack, err := apvssIssueLaneACK(
 		&fixture.context, fixture.leaf, 1,
@@ -504,7 +504,7 @@ func TestAPVSSACKStrictDecryptionAndStatementBindingV1(t *testing.T) {
 	})
 }
 
-func TestAPVSSACKFallbackPartitionRejectsMalformedSetsV1(t *testing.T) {
+func TestAPVSSACKFallbackPartitionRejectsMalformedSetsLegacy(t *testing.T) {
 	fixture := apvssFixture(t, 7, 2)
 	allACK, err := apvssBuildPrototype(
 		&fixture.context, fixture.leaf, fixture.receiverSecrets, fixture.signingSecrets, &fixture.witness, nil,

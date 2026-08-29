@@ -33,18 +33,12 @@ type Config struct {
 	// FNew controls the new-committee APVSS sharing degree, receiver validity,
 	// and scalar-share reconstruction threshold.
 	FNew int
-	// OldFaults and NewFaults are the CV V2 names for the independently
-	// parameterized old and new committee fault bounds. FOld/FNew remain for
-	// legacy providers; CV V2 code must derive its thresholds from these fields.
-	// A non-zero alias must agree with its legacy counterpart when both are set.
+	// OldFaults and NewFaults independently configure both committees.
+	// FOld/FNew are compatibility aliases and must agree when both are set.
 	OldFaults int
 	NewFaults int
 
-	// CVProposerSampleSize and CVValidatorSampleSize are explicit protocol
-	// parameters for the CV V2 eligibility coin. They intentionally have no
-	// hidden defaults: experiment tooling must record the chosen total failure
-	// budget. Non-smoke profiles split that budget equally between proposer and
-	// validator sampling and solve the exact finite-population bounds.
+	// Sampling sizes are explicit experiment parameters with no hidden defaults.
 	CVProposerSampleSize    int
 	CVValidatorSampleSize   int
 	CVSamplingFailureTarget string
@@ -91,8 +85,7 @@ type Config struct {
 	// deterministic dealer artifacts instead of rebuilding all dealers in
 	// every process.
 	ArtifactCacheDir string
-	// AblationMode is retained in the result schema for compatibility. V2 only
-	// accepts "none"; legacy ablations did not affect the production V2 path.
+	// AblationMode is retained for result-schema compatibility; only "none" is valid.
 	AblationMode string
 	// CommMetrics enables protocol-layer communication byte counters.
 	CommMetrics bool
@@ -107,7 +100,7 @@ type Config struct {
 	CVLocalReceiverIDs []int
 
 	runtime           *runtimeCrypto
-	cvRuntimeV2       *cvEpochRuntimeV2
+	cvRuntimeScalar   *cvEpochRuntimeScalar
 	protocolTransport agreementTransport
 }
 
@@ -174,7 +167,7 @@ func NormalizeConfig(cfg Config) Config {
 	if out.Epoch <= 0 {
 		out.Epoch = 1
 	}
-	// Keep legacy providers working while making the V2 parameters explicit.
+	// Keep legacy providers working while making the scalar protocol parameters explicit.
 	// Zero is a valid fault bound, so only a non-zero value can select the
 	// alias. Conflicting non-zero values are rejected by ValidateConfig.
 	if out.OldFaults == 0 {

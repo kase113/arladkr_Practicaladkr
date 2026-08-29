@@ -141,7 +141,10 @@ func TestCVComponentStatementClaimRejectsEquivocation(t *testing.T) {
 	service := &cvComponentService{componentStatementByDealer: make(map[int][]byte)}
 	first := bytes.Repeat([]byte{0x11}, 32)
 	second := bytes.Repeat([]byte{0x22}, 32)
-	if !service.claimComponentStatement(3, first) || !service.claimComponentStatement(3, first) {
+	if !service.claimComponentStatement(3, first) {
+		t.Fatal("initial component statement claim failed")
+	}
+	if !service.claimComponentStatement(3, first) {
 		t.Fatal("idempotent component statement claim failed")
 	}
 	if service.claimComponentStatement(3, second) {

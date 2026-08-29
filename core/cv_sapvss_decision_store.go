@@ -7,40 +7,40 @@ import (
 	"strings"
 )
 
-const cvDecisionSignRecordV2Domain = "ARL-CV-sAPVSS/v2-scalar-group/decision-sign-record"
+const cvDecisionSignRecordScalarDomain = "ARL-CV-sAPVSS/v2-scalar-group/decision-sign-record"
 
-type cvDecisionSignStoreV2 struct {
+type cvDecisionSignStoreScalar struct {
 	root string
 }
 
-func newCVDecisionSignStoreV2(root string) (*cvDecisionSignStoreV2, error) {
+func newCVDecisionSignStoreScalar(root string) (*cvDecisionSignStoreScalar, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, fmt.Errorf("empty CV V2 decision-sign store root")
 	}
-	store := &cvDecisionSignStoreV2{root: filepath.Join(root, "decision-sign-v2-scalar-group")}
+	store := &cvDecisionSignStoreScalar{root: filepath.Join(root, "decision-sign-v2-scalar-group")}
 	if err := cvEnsurePrivateStoreDir(store.root); err != nil {
 		return nil, err
 	}
 	return store, nil
 }
 
-func (s *cvDecisionSignStoreV2) SignHandoffOnce(
+func (s *cvDecisionSignStoreScalar) SignHandoffOnce(
 	sid string, epoch uint64, member int, contextDigest []byte,
-	header *cvAggregateHeaderV2, arc *cvAPDBLockV2, controlSigner *tblsThresholdSigner,
+	header *cvAggregateHeaderScalar, arc *cvAPDBLockScalar, controlSigner *tblsThresholdSigner,
 ) ([]byte, error) {
-	if s == nil || sid == "" || epoch == 0 || member < 0 || !cvV2SignerHasRole(controlSigner, cvV2RoleControl) ||
-		!cvThresholdSignerCanSignV2(controlSigner, member) {
+	if s == nil || sid == "" || epoch == 0 || member < 0 || !cvScalarSignerHasRole(controlSigner, cvScalarRoleControl) ||
+		!cvThresholdSignerCanSignScalar(controlSigner, member) {
 		return nil, fmt.Errorf("invalid CV V2 decision-sign input")
 	}
-	handoffDigest, err := cvHandoffDigestV2(contextDigest, header, arc)
+	handoffDigest, err := cvHandoffDigestScalar(contextDigest, header, arc)
 	if err != nil {
 		return nil, err
 	}
-	statement, err := cvDecisionStatementV2(contextDigest, header, arc)
+	statement, err := cvDecisionStatementScalar(contextDigest, header, arc)
 	if err != nil {
 		return nil, err
 	}
-	record, err := cvDecisionSignRecordV2CanonicalBytes(sid, epoch, member, handoffDigest, statement)
+	record, err := cvDecisionSignRecordScalarCanonicalBytes(sid, epoch, member, handoffDigest, statement)
 	if err != nil {
 		return nil, err
 	}
@@ -53,17 +53,17 @@ func (s *cvDecisionSignStoreV2) SignHandoffOnce(
 	if err := cvPutImmutableFile(path, record); err != nil {
 		return nil, fmt.Errorf("persist CV V2 decision-sign record: %w", err)
 	}
-	signature, err := controlSigner.SignShare(member, cvDecisionCertificateV2Domain, statement)
+	signature, err := controlSigner.SignShare(member, cvDecisionCertificateScalarDomain, statement)
 	if err != nil {
 		return nil, fmt.Errorf("sign persisted CV V2 decision: %w", err)
 	}
-	if !controlSigner.VerifyShare(member, cvDecisionCertificateV2Domain, statement, signature) {
+	if !controlSigner.VerifyShare(member, cvDecisionCertificateScalarDomain, statement, signature) {
 		return nil, fmt.Errorf("invalid local CV V2 decision signature share")
 	}
 	return signature, nil
 }
 
-func (s *cvDecisionSignStoreV2) Read(sid string, epoch uint64, member int) ([]byte, error) {
+func (s *cvDecisionSignStoreScalar) Read(sid string, epoch uint64, member int) ([]byte, error) {
 	path, err := s.path(sid, epoch, member)
 	if err != nil {
 		return nil, err
@@ -71,23 +71,23 @@ func (s *cvDecisionSignStoreV2) Read(sid string, epoch uint64, member int) ([]by
 	return cvReadImmutableFile(path)
 }
 
-func (s *cvDecisionSignStoreV2) path(sid string, epoch uint64, member int) (string, error) {
+func (s *cvDecisionSignStoreScalar) path(sid string, epoch uint64, member int) (string, error) {
 	if s == nil || sid == "" || epoch == 0 || epoch > uint64(^uint(0)>>1) || member < 0 {
 		return "", fmt.Errorf("invalid CV V2 decision-sign store key")
 	}
-	sidComponent, _, err := cvStoreKeyParts(sid, int(epoch), member, hashBytes([]byte(cvDecisionSignRecordV2Domain)))
+	sidComponent, _, err := cvStoreKeyParts(sid, int(epoch), member, hashBytes([]byte(cvDecisionSignRecordScalarDomain)))
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(s.root, sidComponent, fmt.Sprintf("epoch-%d", epoch), fmt.Sprintf("member-%d.decision", member)), nil
 }
 
-func cvDecisionSignRecordV2CanonicalBytes(sid string, epoch uint64, member int, handoffDigest, statement []byte) ([]byte, error) {
+func cvDecisionSignRecordScalarCanonicalBytes(sid string, epoch uint64, member int, handoffDigest, statement []byte) ([]byte, error) {
 	if sid == "" || epoch == 0 || member < 0 || len(handoffDigest) != 32 || len(statement) != 32 {
 		return nil, fmt.Errorf("invalid CV V2 decision-sign record")
 	}
 	var wire bytes.Buffer
-	_ = cvWriteBytes(&wire, []byte(cvDecisionSignRecordV2Domain))
+	_ = cvWriteBytes(&wire, []byte(cvDecisionSignRecordScalarDomain))
 	_ = cvWriteBytes(&wire, []byte(sid))
 	cvWriteUint64(&wire, epoch)
 	cvWriteUint64(&wire, uint64(member))
@@ -96,7 +96,7 @@ func cvDecisionSignRecordV2CanonicalBytes(sid string, epoch uint64, member int, 
 	return wire.Bytes(), nil
 }
 
-func cvThresholdSignerCanSignV2(signer *tblsThresholdSigner, member int) bool {
+func cvThresholdSignerCanSignScalar(signer *tblsThresholdSigner, member int) bool {
 	if signer == nil {
 		return false
 	}

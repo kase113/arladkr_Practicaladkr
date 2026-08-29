@@ -32,35 +32,35 @@ func TestTCPMessageFrameRoundTrip(t *testing.T) {
 }
 
 func TestTCPPoolLaneClassificationSeparatesBulkAndControl(t *testing.T) {
-	if got, want := tcpLoopbackLaneForTag(cvTagAPDBStoreV2), 1; got != want {
+	if got, want := tcpLoopbackLaneForTag(cvTagAPDBStoreScalar), 1; got != want {
 		t.Fatalf("APDB store lane=%d want bulk lane %d", got, want)
 	}
-	if got, want := tcpLoopbackLaneForTag(cvTagPoolCertShareV2), 0; got != want {
+	if got, want := tcpLoopbackLaneForTag(cvTagPoolCertShareScalar), 0; got != want {
 		t.Fatalf("pool certificate share lane=%d want control lane %d", got, want)
 	}
-	control := tcpLoopbackPoolKeyForTag(1, 2, "127.0.0.1:1", cvTagPoolCertShareV2)
-	bulk := tcpLoopbackPoolKeyForTag(1, 2, "127.0.0.1:1", cvTagAPDBRecoverStoreV2)
+	control := tcpLoopbackPoolKeyForTag(1, 2, "127.0.0.1:1", cvTagPoolCertShareScalar)
+	bulk := tcpLoopbackPoolKeyForTag(1, 2, "127.0.0.1:1", cvTagAPDBRecoverStoreScalar)
 	if control == bulk {
 		t.Fatal("control and bulk messages share one TCP pool key")
 	}
-	if tcpLoopbackPoolKeyForTag(1, 2, "127.0.0.1:1", cvTagPoolCertV2) != control {
+	if tcpLoopbackPoolKeyForTag(1, 2, "127.0.0.1:1", cvTagPoolCertScalar) != control {
 		t.Fatal("related control messages do not share deterministic lane")
 	}
 }
 
 func TestTCPBulkPoolPayloadLaneIsStableAndBounded(t *testing.T) {
-	left := tcpLoopbackPoolKeyForPayload(1, 2, "127.0.0.1:1", cvTagAPDBRecoverGetV2, []byte("request-a"), 3)
-	if got := tcpLoopbackPoolKeyForPayload(1, 2, "127.0.0.1:1", cvTagAPDBRecoverGetV2, []byte("request-a"), 3); got != left {
+	left := tcpLoopbackPoolKeyForPayload(1, 2, "127.0.0.1:1", cvTagAPDBRecoverGetScalar, []byte("request-a"), 3)
+	if got := tcpLoopbackPoolKeyForPayload(1, 2, "127.0.0.1:1", cvTagAPDBRecoverGetScalar, []byte("request-a"), 3); got != left {
 		t.Fatalf("same recovery payload selected different pool lanes: %q != %q", left, got)
 	}
 	for _, payload := range [][]byte{[]byte("request-a"), []byte("request-b"), []byte("request-c"), []byte("request-d")} {
-		key := tcpLoopbackPoolKeyForPayload(1, 2, "127.0.0.1:1", cvTagAPDBRecoverGetV2, payload, 3)
+		key := tcpLoopbackPoolKeyForPayload(1, 2, "127.0.0.1:1", cvTagAPDBRecoverGetScalar, payload, 3)
 		if !strings.Contains(key, "#lane=") {
 			t.Fatalf("bulk recovery key missing lane: %q", key)
 		}
 	}
-	control := tcpLoopbackPoolKeyForPayload(1, 2, "127.0.0.1:1", cvTagPoolCertShareV2, []byte("request-a"), 3)
-	if control != tcpLoopbackPoolKeyForTag(1, 2, "127.0.0.1:1", cvTagPoolCertShareV2) {
+	control := tcpLoopbackPoolKeyForPayload(1, 2, "127.0.0.1:1", cvTagPoolCertShareScalar, []byte("request-a"), 3)
+	if control != tcpLoopbackPoolKeyForTag(1, 2, "127.0.0.1:1", cvTagPoolCertShareScalar) {
 		t.Fatalf("control payload unexpectedly changed its lane: %q", control)
 	}
 }

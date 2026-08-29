@@ -7,27 +7,27 @@ import (
 	"strings"
 )
 
-type cvAPDBHolderStoreV2 struct {
+type cvAPDBHolderStoreScalar struct {
 	root string
 }
 
-func newCVAPDBHolderStoreV2(root string) (*cvAPDBHolderStoreV2, error) {
+func newCVAPDBHolderStoreScalar(root string) (*cvAPDBHolderStoreScalar, error) {
 	if strings.TrimSpace(root) == "" {
 		return nil, fmt.Errorf("empty CV V2 APDB holder store root")
 	}
-	store := &cvAPDBHolderStoreV2{root: filepath.Join(root, "apdb-v2-scalar-group")}
+	store := &cvAPDBHolderStoreScalar{root: filepath.Join(root, "apdb-v2-scalar-group")}
 	if err := cvEnsurePrivateStoreDir(store.root); err != nil {
 		return nil, err
 	}
 	return store, nil
 }
 
-func (s *cvAPDBHolderStoreV2) StoreAndSignOnce(
-	sid string, epoch uint64, holder int, oldRoster []int, store *cvAPDBStoreV2,
+func (s *cvAPDBHolderStoreScalar) StoreAndSignOnce(
+	sid string, epoch uint64, holder int, oldRoster []int, store *cvAPDBStoreScalar,
 	totalShards, shardBytes int, apdbSigner *tblsThresholdSigner,
 ) ([]byte, error) {
-	if s == nil || sid == "" || epoch == 0 || holder < 0 || !cvV2SignerHasRole(apdbSigner, cvV2RoleAPDB) ||
-		!cvThresholdSignerCanSignV2(apdbSigner, holder) || len(oldRoster) != totalShards ||
+	if s == nil || sid == "" || epoch == 0 || holder < 0 || !cvScalarSignerHasRole(apdbSigner, cvScalarRoleAPDB) ||
+		!cvThresholdSignerCanSignScalar(apdbSigner, holder) || len(oldRoster) != totalShards ||
 		!equalInts(oldRoster, sortedUnique(oldRoster)) || !equalInts(apdbSigner.memberOrder, oldRoster) {
 		return nil, fmt.Errorf("invalid CV V2 APDB holder input")
 	}
@@ -41,7 +41,7 @@ func (s *cvAPDBHolderStoreV2) StoreAndSignOnce(
 	if holderIndex < 0 || store == nil || store.Index != holderIndex {
 		return nil, fmt.Errorf("CV V2 APDB store index does not match holder roster position")
 	}
-	wire, err := cvAPDBStoreV2CanonicalBytes(store, totalShards, shardBytes)
+	wire, err := cvAPDBStoreScalarCanonicalBytes(store, totalShards, shardBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -52,7 +52,7 @@ func (s *cvAPDBHolderStoreV2) StoreAndSignOnce(
 	if err := cvPutImmutableFile(path, wire); err != nil {
 		return nil, fmt.Errorf("persist CV V2 APDB holder store: %w", err)
 	}
-	statement, err := cvAPDBStoredStatementV2(store.InstanceDigest, store.Root)
+	statement, err := cvAPDBStoredStatementScalar(store.InstanceDigest, store.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -66,10 +66,10 @@ func (s *cvAPDBHolderStoreV2) StoreAndSignOnce(
 	return share, nil
 }
 
-func (s *cvAPDBHolderStoreV2) Read(
+func (s *cvAPDBHolderStoreScalar) Read(
 	sid string, epoch uint64, holder int, expectedInstance, expectedRoot []byte,
 	totalShards, shardBytes int,
-) (*cvAPDBStoreV2, error) {
+) (*cvAPDBStoreScalar, error) {
 	if len(expectedInstance) != 32 || len(expectedRoot) != 32 || totalShards <= 0 || shardBytes <= 0 {
 		return nil, fmt.Errorf("invalid CV V2 APDB holder read input")
 	}
@@ -81,7 +81,7 @@ func (s *cvAPDBHolderStoreV2) Read(
 	if err != nil {
 		return nil, err
 	}
-	store, err := cvDecodeAPDBStoreV2(wire, totalShards, shardBytes)
+	store, err := cvDecodeAPDBStoreScalar(wire, totalShards, shardBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -91,18 +91,18 @@ func (s *cvAPDBHolderStoreV2) Read(
 	return store, nil
 }
 
-func (s *cvAPDBHolderStoreV2) ReadAuthorizedAggregate(
+func (s *cvAPDBHolderStoreScalar) ReadAuthorizedAggregate(
 	sid string, epoch uint64, holder int, requestWire, expectedContext []byte,
 	totalShards, shardBytes int, apdbSigner, controlSigner *tblsThresholdSigner,
-) (*cvAPDBStoreV2, error) {
-	handoff, err := cvAuthorizeAggregateRecoveryRequestV2(requestWire, expectedContext, apdbSigner, controlSigner)
+) (*cvAPDBStoreScalar, error) {
+	handoff, err := cvAuthorizeAggregateRecoveryRequestScalar(requestWire, expectedContext, apdbSigner, controlSigner)
 	if err != nil {
 		return nil, err
 	}
 	return s.Read(sid, epoch, holder, handoff.ARC.InstanceDigest, handoff.ARC.Root, totalShards, shardBytes)
 }
 
-func (s *cvAPDBHolderStoreV2) path(sid string, epoch uint64, holder int, instanceDigest []byte) (string, error) {
+func (s *cvAPDBHolderStoreScalar) path(sid string, epoch uint64, holder int, instanceDigest []byte) (string, error) {
 	if s == nil || sid == "" || epoch == 0 || epoch > uint64(^uint(0)>>1) || holder < 0 || len(instanceDigest) != 32 {
 		return "", fmt.Errorf("invalid CV V2 APDB holder store key")
 	}

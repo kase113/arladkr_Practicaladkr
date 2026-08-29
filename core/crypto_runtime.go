@@ -214,9 +214,9 @@ func (r *runtimeCrypto) phaseCommStats() (map[string]uint64, map[string]uint64) 
 type tblsThresholdSigner struct {
 	t int
 	n int
-	// v2Role is non-empty only for signers loaded from the V2 role bundle.
+	// scalarRole is non-empty only for signers loaded from the scalar protocol role bundle.
 	// Protocol entry points use it to reject APDB/control/coin key swapping.
-	v2Role string
+	scalarRole string
 
 	pubKey                bls12381.G2Affine   // group public key = secret * G2
 	pubKeyShares          []bls12381.G2Affine // individual pk_i = share_i * G2
@@ -314,8 +314,8 @@ func newTBLSThresholdSignerFromMaterial(material *cvOldLockKeyMaterial) (*tblsTh
 	}, nil
 }
 
-func cvV2SignerHasRole(signer *tblsThresholdSigner, role string) bool {
-	return signer != nil && cvV2KnownThresholdRole(role) && signer.v2Role == role
+func cvScalarSignerHasRole(signer *tblsThresholdSigner, role string) bool {
+	return signer != nil && cvScalarKnownThresholdRole(role) && signer.scalarRole == role
 }
 
 func newTBLSThresholdSignerFromCoinMaterial(material *cvMVBACoinKeyMaterial) (*tblsThresholdSigner, error) {
@@ -339,8 +339,8 @@ func newTBLSThresholdSignerFromCoinMaterial(material *cvMVBACoinKeyMaterial) (*t
 	}, nil
 }
 
-func newTBLSThresholdSignerFromV2Material(material *cvV2ThresholdKeyMaterial) (*tblsThresholdSigner, error) {
-	if material == nil || !cvV2KnownThresholdRole(material.role) || material.threshold <= 0 ||
+func newTBLSThresholdSignerFromScalarMaterial(material *cvScalarThresholdKeyMaterial) (*tblsThresholdSigner, error) {
+	if material == nil || !cvScalarKnownThresholdRole(material.role) || material.threshold <= 0 ||
 		material.threshold > len(material.members) || len(material.publicShares) != len(material.members) ||
 		len(material.transportPublicShares) != len(material.members) || len(material.localShares) == 0 {
 		return nil, fmt.Errorf("invalid CV V2 threshold signer material")
@@ -354,7 +354,7 @@ func newTBLSThresholdSignerFromV2Material(material *cvV2ThresholdKeyMaterial) (*
 		}
 	}
 	return &tblsThresholdSigner{
-		t: material.threshold, n: len(material.members), v2Role: material.role, pubKey: material.groupPublic,
+		t: material.threshold, n: len(material.members), scalarRole: material.role, pubKey: material.groupPublic,
 		pubKeyShares: append([]bls12381.G2Affine(nil), material.publicShares...), shares: shares,
 		transportPubKeyShares: append([]bls12381.G1Affine(nil), material.transportPublicShares...),
 		memberOrder:           append([]int(nil), material.members...), memberIndex: memberIndex,
@@ -476,8 +476,8 @@ func (s *tblsThresholdSigner) VerifyShare(member int, domain string, digest []by
 	return ok
 }
 
-// Recover reconstructs the full BLS signature via Lagrange interpolation over G1.
-func (s *tblsThresholdSigner) Recover(domain string, digest []byte, sharesMap map[int][]byte) ([]byte, error) {
+// Recover reconstructs a BLS signature. Callers verify its message binding.
+func (s *tblsThresholdSigner) Recover(_ string, _ []byte, sharesMap map[int][]byte) ([]byte, error) {
 	if len(sharesMap) < s.t {
 		return nil, fmt.Errorf("insufficient shares: have=%d need=%d", len(sharesMap), s.t)
 	}

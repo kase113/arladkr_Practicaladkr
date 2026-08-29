@@ -10,20 +10,13 @@ import (
 	"github.com/consensys/gnark-crypto/ecc/bls12-381/fp"
 )
 
-// Compressed canonical wires recover every G1 y-coordinate with a field
-// square root, which dominates catalog-verification CPU and cannot be batched.
-// A dealer-served payload response may therefore attach the uncompressed form
-// of exactly the points the deferred decode path reads, in wire order. Every
-// consumed hint must recompress to the exact canonical bytes still on the
-// wire, so the attachment cannot introduce a point the signed payload does
-// not already contain; any shortage, corruption, or curve mismatch reverts
-// that decode permanently to square-root decompression. Subgroup membership
-// keeps flowing through the existing deferred batch check either way.
+// Payload responses may attach uncompressed G1 hints to avoid repeated square
+// roots. Each hint must recompress to the signed canonical point bytes.
 
-// cvDecodeSidechannelV2 carries one leaf decode's hint state across the
+// cvDecodeSidechannelScalar carries one leaf decode's hint state across the
 // nested wire readers that read deferred points. A single instance is shared
 // by all readers of one decode so consumption order matches the record order.
-type cvDecodeSidechannelV2 struct {
+type cvDecodeSidechannelScalar struct {
 	// hints holds the remaining uncompressed point encodings.
 	hints []byte
 	// usable turns false on the first shortage or mismatch; the decode then
@@ -42,7 +35,7 @@ type cvDecodeSidechannelV2 struct {
 // finishDeferredSubgroupBatch runs the single leaf-level subgroup check and
 // resets the collector; acceptance semantics are unchanged because the leaf is
 // rejected here before any caller can use its structures.
-func (side *cvDecodeSidechannelV2) finishDeferredSubgroupBatch() error {
+func (side *cvDecodeSidechannelScalar) finishDeferredSubgroupBatch() error {
 	if side == nil || len(side.deferredBatch) == 0 {
 		return nil
 	}
@@ -51,15 +44,15 @@ func (side *cvDecodeSidechannelV2) finishDeferredSubgroupBatch() error {
 	return cvAssertG1SubgroupBatch(points)
 }
 
-func newCVDecodeSidechannelHintsV2(hints []byte) *cvDecodeSidechannelV2 {
+func newCVDecodeSidechannelHintsScalar(hints []byte) *cvDecodeSidechannelScalar {
 	if len(hints) == 0 {
 		return nil
 	}
-	return &cvDecodeSidechannelV2{hints: hints, usable: true}
+	return &cvDecodeSidechannelScalar{hints: hints, usable: true}
 }
 
-func newCVDecodeSidechannelRecordingV2() *cvDecodeSidechannelV2 {
-	return &cvDecodeSidechannelV2{record: make([]byte, 0, 64*bls12381.SizeOfG1AffineUncompressed)}
+func newCVDecodeSidechannelRecordingScalar() *cvDecodeSidechannelScalar {
+	return &cvDecodeSidechannelScalar{record: make([]byte, 0, 64*bls12381.SizeOfG1AffineUncompressed)}
 }
 
 // cvAppendG1HintUncompressed appends the gnark uncompressed encoding of point.
@@ -114,10 +107,7 @@ func cvDecodeG1HintUnchecked(hint []byte) (bls12381.G1Affine, error) {
 	return point, nil
 }
 
-// cvRecompressG1Equals reports whether point serializes to exactly the
-// canonical compressed bytes. This is the binding between a hint and the
-// signed wire: compression is the deterministic inverse of the decompression
-// the wire itself would run.
+// cvRecompressG1Equals binds a point hint to canonical compressed bytes.
 func cvRecompressG1Equals(point *bls12381.G1Affine, encoded []byte) bool {
 	if len(encoded) < bls12381.SizeOfG1AffineCompressed {
 		return false
@@ -139,7 +129,7 @@ func cvRecompressG1Equals(point *bls12381.G1Affine, encoded []byte) bool {
 
 // consumeHint returns the point for encoded, preferring the sidechannel's
 // next uncompressed hint when it recompresses to the exact wire bytes.
-func (side *cvDecodeSidechannelV2) consumeHint(encoded []byte) (bls12381.G1Affine, bool) {
+func (side *cvDecodeSidechannelScalar) consumeHint(encoded []byte) (bls12381.G1Affine, bool) {
 	if side == nil || !side.usable {
 		return bls12381.G1Affine{}, false
 	}
@@ -156,10 +146,10 @@ func (side *cvDecodeSidechannelV2) consumeHint(encoded []byte) (bls12381.G1Affin
 	return point, true
 }
 
-// cvPayloadHintsEnabledV2 gates both serving and consuming payload point
+// cvPayloadHintsEnabledScalar gates both serving and consuming payload point
 // hints; the wire stays compatible either way because the attachment is an
 // optional trailing field.
-func cvPayloadHintsEnabledV2() bool {
+func cvPayloadHintsEnabledScalar() bool {
 	switch strings.TrimSpace(strings.ToLower(os.Getenv("RLADKR_APDB_PAYLOAD_HINTS"))) {
 	case "1", "true", "on", "enabled":
 		return true
@@ -171,13 +161,13 @@ func cvPayloadHintsEnabledV2() bool {
 // CVPayloadHintsEnabled reports the component-recovery wire profile used by
 // the benchmark process. Hints are an optional verified decode acceleration.
 func CVPayloadHintsEnabled() bool {
-	return cvPayloadHintsEnabledV2()
+	return cvPayloadHintsEnabledScalar()
 }
 
-// cvMaxPayloadHintsBytesV2 bounds the attachment: hints hold 96 bytes per
+// cvMaxPayloadHintsBytesScalar bounds the attachment: hints hold 96 bytes per
 // deferred point while the payload carries at least 48 canonical bytes for
 // each, so twice the payload limit is a safe upper bound.
-func cvMaxPayloadHintsBytesV2(maximumPayload int) int {
+func cvMaxPayloadHintsBytesScalar(maximumPayload int) int {
 	if maximumPayload <= 0 {
 		return 0
 	}

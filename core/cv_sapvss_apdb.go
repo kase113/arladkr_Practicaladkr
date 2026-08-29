@@ -19,9 +19,9 @@ const (
 	cvAPDBStoreWireDomain = "ARL-CV-sAPVSS/v2-scalar-group/apdb-store"
 )
 
-// cvAPDBLockV2 is the compact public certificate of an immutable APDB
+// cvAPDBLockScalar is the compact public certificate of an immutable APDB
 // instance. Individual holder identities and signature shares never enter it.
-type cvAPDBLockV2 struct {
+type cvAPDBLockScalar struct {
 	InstanceDigest []byte
 	Root           []byte
 	Certificate    []byte
@@ -29,7 +29,7 @@ type cvAPDBLockV2 struct {
 	canonicalWire []byte
 }
 
-type cvAPDBStoreV2 struct {
+type cvAPDBStoreScalar struct {
 	InstanceDigest []byte
 	Root           []byte
 	Index          int
@@ -37,16 +37,16 @@ type cvAPDBStoreV2 struct {
 	Siblings       [][]byte
 }
 
-type cvAPDBEncodedV2 struct {
+type cvAPDBEncodedScalar struct {
 	instanceDigest []byte
 	root           []byte
 	dataShards     int
 	totalShards    int
 	shardBytes     int
-	stores         []cvAPDBStoreV2
+	stores         []cvAPDBStoreScalar
 }
 
-func cvAPDBInstanceDigestV2(label string, parts ...[]byte) ([]byte, error) {
+func cvAPDBInstanceDigestScalar(label string, parts ...[]byte) ([]byte, error) {
 	if label == "" {
 		return nil, fmt.Errorf("empty CV V2 APDB instance label")
 	}
@@ -60,25 +60,25 @@ func cvAPDBInstanceDigestV2(label string, parts ...[]byte) ([]byte, error) {
 	return hashBytes([]byte(cvAPDBInstanceDomain), wire.Bytes()), nil
 }
 
-func cvAPDBStoredStatementV2(instanceDigest, root []byte) ([]byte, error) {
+func cvAPDBStoredStatementScalar(instanceDigest, root []byte) ([]byte, error) {
 	if len(instanceDigest) != 32 || len(root) != 32 {
 		return nil, fmt.Errorf("invalid CV V2 APDB stored statement")
 	}
 	return hashBytes([]byte(cvAPDBStoredDomain), instanceDigest, root), nil
 }
 
-func cvAPDBEncodeV2(instanceDigest, payload []byte, dataShards, totalShards, maximumPayload int) (*cvAPDBEncodedV2, error) {
+func cvAPDBEncodeScalar(instanceDigest, payload []byte, dataShards, totalShards, maximumPayload int) (*cvAPDBEncodedScalar, error) {
 	if len(instanceDigest) != 32 || len(payload) == 0 || maximumPayload <= 0 || len(payload) > maximumPayload ||
 		dataShards <= 0 || totalShards < dataShards {
 		return nil, fmt.Errorf("invalid CV V2 APDB encoding parameters")
 	}
 	shardBytes := (8 + len(payload) + dataShards - 1) / dataShards
-	return cvAPDBEncodeSizedV2(instanceDigest, payload, dataShards, totalShards, shardBytes, maximumPayload)
+	return cvAPDBEncodeSizedScalar(instanceDigest, payload, dataShards, totalShards, shardBytes, maximumPayload)
 }
 
-func cvAPDBEncodeSizedV2(
+func cvAPDBEncodeSizedScalar(
 	instanceDigest, payload []byte, dataShards, totalShards, shardBytes, maximumPayload int,
-) (*cvAPDBEncodedV2, error) {
+) (*cvAPDBEncodedScalar, error) {
 	if len(instanceDigest) != 32 || len(payload) == 0 || maximumPayload <= 0 || len(payload) > maximumPayload ||
 		dataShards <= 0 || totalShards < dataShards || shardBytes <= 0 ||
 		8+len(payload) > dataShards*shardBytes {
@@ -94,14 +94,14 @@ func cvAPDBEncodeSizedV2(
 	if len(shards) != totalShards || len(shards) == 0 || len(shards[0]) == 0 {
 		return nil, fmt.Errorf("invalid CV V2 APDB encoded shard set")
 	}
-	root, branches := cvAPDBBuildMerkleV2(instanceDigest, shards)
-	encoded := &cvAPDBEncodedV2{
+	root, branches := cvAPDBBuildMerkleScalar(instanceDigest, shards)
+	encoded := &cvAPDBEncodedScalar{
 		instanceDigest: append([]byte(nil), instanceDigest...), root: root,
 		dataShards: dataShards, totalShards: totalShards, shardBytes: len(shards[0]),
-		stores: make([]cvAPDBStoreV2, totalShards),
+		stores: make([]cvAPDBStoreScalar, totalShards),
 	}
 	for i := range shards {
-		encoded.stores[i] = cvAPDBStoreV2{
+		encoded.stores[i] = cvAPDBStoreScalar{
 			InstanceDigest: append([]byte(nil), instanceDigest...), Root: append([]byte(nil), root...), Index: i,
 			Shard: append([]byte(nil), shards[i]...), Siblings: cvCloneByteSlices(branches[i]),
 		}
@@ -109,10 +109,10 @@ func cvAPDBEncodeSizedV2(
 	return encoded, nil
 }
 
-func cvAPDBBuildMerkleV2(instanceDigest []byte, shards [][]byte) ([]byte, [][][]byte) {
+func cvAPDBBuildMerkleScalar(instanceDigest []byte, shards [][]byte) ([]byte, [][][]byte) {
 	levels := [][][]byte{make([][]byte, len(shards))}
 	for i := range shards {
-		levels[0][i] = cvAPDBShardHashV2(instanceDigest, i, shards[i])
+		levels[0][i] = cvAPDBShardHashScalar(instanceDigest, i, shards[i])
 	}
 	for len(levels[len(levels)-1]) > 1 {
 		level := levels[len(levels)-1]
@@ -142,13 +142,13 @@ func cvAPDBBuildMerkleV2(instanceDigest []byte, shards [][]byte) ([]byte, [][][]
 	return append([]byte(nil), levels[len(levels)-1][0]...), branches
 }
 
-func cvAPDBShardHashV2(instanceDigest []byte, index int, shard []byte) []byte {
+func cvAPDBShardHashScalar(instanceDigest []byte, index int, shard []byte) []byte {
 	var encoded [4]byte
 	binary.BigEndian.PutUint32(encoded[:], uint32(index))
 	return hashBytes([]byte(cvAPDBShardDomain), instanceDigest, encoded[:], shard)
 }
 
-func cvVerifyAPDBStoreV2(store *cvAPDBStoreV2, totalShards, shardBytes int) error {
+func cvVerifyAPDBStoreScalar(store *cvAPDBStoreScalar, totalShards, shardBytes int) error {
 	if store == nil || len(store.InstanceDigest) != 32 || len(store.Root) != 32 || store.Index < 0 ||
 		store.Index >= totalShards || shardBytes <= 0 || len(store.Shard) != shardBytes {
 		return fmt.Errorf("invalid CV V2 APDB store")
@@ -157,7 +157,7 @@ func cvVerifyAPDBStoreV2(store *cvAPDBStoreV2, totalShards, shardBytes int) erro
 	if len(store.Siblings) != wantDepth {
 		return fmt.Errorf("invalid CV V2 APDB Merkle branch depth")
 	}
-	digest := cvAPDBShardHashV2(store.InstanceDigest, store.Index, store.Shard)
+	digest := cvAPDBShardHashScalar(store.InstanceDigest, store.Index, store.Shard)
 	index := store.Index
 	for _, sibling := range store.Siblings {
 		if len(sibling) != 32 {
@@ -185,31 +185,31 @@ func cvAPDBMerkleDepth(totalShards int) int {
 	return depth
 }
 
-func cvNewAPDBLockV2(encoded *cvAPDBEncodedV2, certificate []byte) (*cvAPDBLockV2, error) {
+func cvNewAPDBLockScalar(encoded *cvAPDBEncodedScalar, certificate []byte) (*cvAPDBLockScalar, error) {
 	if encoded == nil || len(encoded.instanceDigest) != 32 || len(encoded.root) != 32 || len(certificate) == 0 ||
 		len(certificate) > cvMaxComponentSignatureBytes {
 		return nil, fmt.Errorf("invalid CV V2 APDB lock")
 	}
-	return &cvAPDBLockV2{
+	return &cvAPDBLockScalar{
 		InstanceDigest: append([]byte(nil), encoded.instanceDigest...), Root: append([]byte(nil), encoded.root...),
 		Certificate: append([]byte(nil), certificate...),
 	}, nil
 }
 
-func cvVerifyAPDBLockV2(lock *cvAPDBLockV2, signer *tblsThresholdSigner) error {
+func cvVerifyAPDBLockScalar(lock *cvAPDBLockScalar, signer *tblsThresholdSigner) error {
 	if lock == nil || len(lock.InstanceDigest) != 32 || len(lock.Root) != 32 || len(lock.Certificate) == 0 ||
-		len(lock.Certificate) > cvMaxComponentSignatureBytes || !cvV2SignerHasRole(signer, cvV2RoleAPDB) {
+		len(lock.Certificate) > cvMaxComponentSignatureBytes || !cvScalarSignerHasRole(signer, cvScalarRoleAPDB) {
 		return fmt.Errorf("invalid CV V2 APDB lock")
 	}
-	statement, err := cvAPDBStoredStatementV2(lock.InstanceDigest, lock.Root)
+	statement, err := cvAPDBStoredStatementScalar(lock.InstanceDigest, lock.Root)
 	if err != nil || !signer.VerifyRecovered(cvAPDBStoredDomain, statement, lock.Certificate) {
 		return fmt.Errorf("invalid CV V2 APDB lock certificate")
 	}
 	return nil
 }
 
-func cvRecoverAPDBV2(
-	lock *cvAPDBLockV2, stores []cvAPDBStoreV2, dataShards, totalShards, shardBytes, maximumPayload int,
+func cvRecoverAPDBScalar(
+	lock *cvAPDBLockScalar, stores []cvAPDBStoreScalar, dataShards, totalShards, shardBytes, maximumPayload int,
 	bindingCheck func([]byte) error,
 ) ([]byte, error) {
 	if lock == nil || len(lock.InstanceDigest) != 32 || len(lock.Root) != 32 || dataShards <= 0 ||
@@ -221,7 +221,7 @@ func cvRecoverAPDBV2(
 	for i := range stores {
 		store := &stores[i]
 		if !bytes.Equal(store.InstanceDigest, lock.InstanceDigest) || !bytes.Equal(store.Root, lock.Root) ||
-			cvVerifyAPDBStoreV2(store, totalShards, shardBytes) != nil {
+			cvVerifyAPDBStoreScalar(store, totalShards, shardBytes) != nil {
 			return nil, fmt.Errorf("invalid CV V2 APDB recovery store")
 		}
 		if _, duplicate := seen[store.Index]; duplicate {
@@ -245,7 +245,7 @@ func cvRecoverAPDBV2(
 		return nil, fmt.Errorf("invalid recovered CV V2 APDB payload length")
 	}
 	payload := append([]byte(nil), packed[8:8+int(length)]...)
-	reencoded, err := cvAPDBEncodeSizedV2(
+	reencoded, err := cvAPDBEncodeSizedScalar(
 		lock.InstanceDigest, payload, dataShards, totalShards, shardBytes, maximumPayload,
 	)
 	if err != nil || !bytes.Equal(reencoded.root, lock.Root) {
@@ -259,7 +259,7 @@ func cvRecoverAPDBV2(
 	return payload, nil
 }
 
-func cvAPDBLockV2CanonicalBytes(lock *cvAPDBLockV2) ([]byte, error) {
+func cvAPDBLockScalarCanonicalBytes(lock *cvAPDBLockScalar) ([]byte, error) {
 	if lock == nil || len(lock.InstanceDigest) != 32 || len(lock.Root) != 32 || len(lock.Certificate) == 0 ||
 		len(lock.Certificate) > cvMaxComponentSignatureBytes {
 		return nil, fmt.Errorf("invalid CV V2 APDB lock")
@@ -275,7 +275,7 @@ func cvAPDBLockV2CanonicalBytes(lock *cvAPDBLockV2) ([]byte, error) {
 	return wire.Bytes(), nil
 }
 
-func cvDecodeAPDBLockV2(wire []byte) (*cvAPDBLockV2, error) {
+func cvDecodeAPDBLockScalar(wire []byte) (*cvAPDBLockScalar, error) {
 	r := newCVWireReader(wire)
 	domain, err := r.bytes(len(cvAPDBLockWireDomain))
 	if err != nil || !bytes.Equal(domain, []byte(cvAPDBLockWireDomain)) {
@@ -293,8 +293,8 @@ func cvDecodeAPDBLockV2(wire []byte) (*cvAPDBLockV2, error) {
 	if err != nil || len(certificate) == 0 || r.reader.Len() != 0 {
 		return nil, fmt.Errorf("invalid CV V2 APDB lock certificate")
 	}
-	lock := &cvAPDBLockV2{InstanceDigest: instanceDigest, Root: root, Certificate: certificate}
-	canonical, err := cvAPDBLockV2CanonicalBytes(lock)
+	lock := &cvAPDBLockScalar{InstanceDigest: instanceDigest, Root: root, Certificate: certificate}
+	canonical, err := cvAPDBLockScalarCanonicalBytes(lock)
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 APDB lock")
 	}
@@ -302,8 +302,8 @@ func cvDecodeAPDBLockV2(wire []byte) (*cvAPDBLockV2, error) {
 	return lock, nil
 }
 
-func cvAPDBStoreV2CanonicalBytes(store *cvAPDBStoreV2, totalShards, shardBytes int) ([]byte, error) {
-	if err := cvVerifyAPDBStoreV2(store, totalShards, shardBytes); err != nil {
+func cvAPDBStoreScalarCanonicalBytes(store *cvAPDBStoreScalar, totalShards, shardBytes int) ([]byte, error) {
+	if err := cvVerifyAPDBStoreScalar(store, totalShards, shardBytes); err != nil {
 		return nil, err
 	}
 	var wire bytes.Buffer
@@ -323,7 +323,7 @@ func cvAPDBStoreV2CanonicalBytes(store *cvAPDBStoreV2, totalShards, shardBytes i
 	return wire.Bytes(), nil
 }
 
-func cvDecodeAPDBStoreV2(wire []byte, totalShards, shardBytes int) (*cvAPDBStoreV2, error) {
+func cvDecodeAPDBStoreScalar(wire []byte, totalShards, shardBytes int) (*cvAPDBStoreScalar, error) {
 	r := newCVWireReader(wire)
 	domain, err := r.bytes(len(cvAPDBStoreWireDomain))
 	if err != nil || !bytes.Equal(domain, []byte(cvAPDBStoreWireDomain)) {
@@ -359,12 +359,12 @@ func cvDecodeAPDBStoreV2(wire []byte, totalShards, shardBytes int) (*cvAPDBStore
 	if r.reader.Len() != 0 {
 		return nil, fmt.Errorf("trailing CV V2 APDB store bytes")
 	}
-	store := &cvAPDBStoreV2{InstanceDigest: instanceDigest, Root: root, Index: index, Shard: shard, Siblings: siblings}
+	store := &cvAPDBStoreScalar{InstanceDigest: instanceDigest, Root: root, Index: index, Shard: shard, Siblings: siblings}
 	// The parser consumed the fixed domain, digest, root, index, exact shard,
 	// exact Merkle depth, all 32-byte siblings, and EOF. Verify the authenticated
 	// root directly; re-serializing the full shard/branch solely to compare the
 	// same deterministic framing adds an allocation on every response.
-	if err := cvVerifyAPDBStoreV2(store, totalShards, shardBytes); err != nil {
+	if err := cvVerifyAPDBStoreScalar(store, totalShards, shardBytes); err != nil {
 		return nil, err
 	}
 	return store, nil
@@ -383,7 +383,7 @@ const (
 	cvAPDBPayloadCompressedWireDomain = "ARL-CV-sAPVSS/v2-scalar-group/apdb-recover-payload-deflate-v1"
 )
 
-type cvAPDBPayloadResponseV2 struct {
+type cvAPDBPayloadResponseScalar struct {
 	InstanceDigest []byte
 	Payload        []byte
 	// Hints optionally carries the uncompressed forms of every deferred
@@ -394,7 +394,7 @@ type cvAPDBPayloadResponseV2 struct {
 	Hints []byte
 }
 
-func cvAPDBPayloadResponseV2CanonicalBytes(response *cvAPDBPayloadResponseV2) ([]byte, error) {
+func cvAPDBPayloadResponseScalarCanonicalBytes(response *cvAPDBPayloadResponseScalar) ([]byte, error) {
 	if response == nil || len(response.InstanceDigest) != 32 || len(response.Payload) == 0 {
 		return nil, fmt.Errorf("invalid CV V2 APDB payload response")
 	}
@@ -411,8 +411,8 @@ func cvAPDBPayloadResponseV2CanonicalBytes(response *cvAPDBPayloadResponseV2) ([
 	return wire.Bytes(), nil
 }
 
-func cvAPDBPayloadResponseV2TransportBytes(response *cvAPDBPayloadResponseV2) ([]byte, error) {
-	legacy, err := cvAPDBPayloadResponseV2CanonicalBytes(response)
+func cvAPDBPayloadResponseScalarTransportBytes(response *cvAPDBPayloadResponseScalar) ([]byte, error) {
+	legacy, err := cvAPDBPayloadResponseScalarCanonicalBytes(response)
 	if err != nil {
 		return nil, err
 	}
@@ -446,7 +446,7 @@ func cvAPDBPayloadResponseV2TransportBytes(response *cvAPDBPayloadResponseV2) ([
 	return wire.Bytes(), nil
 }
 
-func cvDecodeAPDBPayloadResponseV2(wire []byte, maximumPayload int) (*cvAPDBPayloadResponseV2, error) {
+func cvDecodeAPDBPayloadResponseScalar(wire []byte, maximumPayload int) (*cvAPDBPayloadResponseScalar, error) {
 	if maximumPayload <= 0 {
 		return nil, fmt.Errorf("invalid CV V2 APDB payload response limit")
 	}
@@ -485,11 +485,11 @@ func cvDecodeAPDBPayloadResponseV2(wire []byte, maximumPayload int) (*cvAPDBPayl
 	}
 	var hints []byte
 	if r.reader.Len() > 0 {
-		hints, err = r.bytes(cvMaxPayloadHintsBytesV2(maximumPayload))
+		hints, err = r.bytes(cvMaxPayloadHintsBytesScalar(maximumPayload))
 		if err != nil || r.reader.Len() != 0 ||
 			len(hints)%bls12381.SizeOfG1AffineUncompressed != 0 {
 			return nil, fmt.Errorf("invalid CV V2 APDB payload response hints")
 		}
 	}
-	return &cvAPDBPayloadResponseV2{InstanceDigest: instanceDigest, Payload: payload, Hints: hints}, nil
+	return &cvAPDBPayloadResponseScalar{InstanceDigest: instanceDigest, Payload: payload, Hints: hints}, nil
 }

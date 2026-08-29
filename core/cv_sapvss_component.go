@@ -19,11 +19,7 @@ const (
 	cvMaxComponentSignatureBytes   = 1 << 20
 )
 
-// cvComponentDispersal is the compact public commitment to a component's RS
-// encoding. The Merkle root commits every shard before the Fiat-Shamir
-// codeword challenge is derived. dataFingerprints then define one RS codeword
-// for 128 bits of independent GF(256) linear checks. Their encoded size grows
-// linearly with dataShards.
+// cvComponentDispersal commits the RS shards and their codeword checks.
 type cvComponentDispersal struct {
 	nonce              []byte
 	dataShards         int
@@ -47,10 +43,7 @@ type cvComponentShardArtifact struct {
 	shard      cvComponentShard
 }
 
-// cvComponentDescriptorCanonicalBytes is the compact, certificate-only
-// descriptor used on the CV-sAPVSS network path. Holder identities and their
-// individual signature shares remain local recovery evidence, but are not
-// repeatedly embedded in every aggregate offer.
+// cvComponentDescriptorCanonicalBytes encodes the certificate-only descriptor.
 func cvComponentDescriptorCanonicalBytes(descriptor *cvComponentDescriptor) ([]byte, error) {
 	if descriptor == nil || descriptor.dealer < 0 || len(descriptor.leafDigest) != 32 ||
 		!cvValidComponentDispersal(&descriptor.dispersal) || len(descriptor.certificate) == 0 ||

@@ -480,10 +480,6 @@ func (solver *cvBoundedDLogSolver) solve(target *bls12381.G1Affine) (uint64, boo
 	return 0, false
 }
 
-func cvBoundedDLog(target *bls12381.G1Affine, bound uint64) (uint64, bool) {
-	return cvNewBoundedDLogSolver(bound).solve(target)
-}
-
 func cvDecryptShare(
 	profile cvChunkProfile,
 	receiverSecret fr.Element,

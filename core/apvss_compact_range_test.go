@@ -61,7 +61,7 @@ func apvssCloneCompactRangeProofForTest(in *apvssCompactRangeProof) *apvssCompac
 	return &out
 }
 
-func TestAPVSSCompactRangeProofV1(t *testing.T) {
+func TestAPVSSCompactRangeProofLegacy(t *testing.T) {
 	values := []uint64{0, 1, 255, 42, 7}
 	statement, blindings, commitments := apvssCompactRangeFixture(t, values, 8)
 	proof, err := apvssProveCompactRange(statement, commitments, values, blindings, 8)
@@ -80,7 +80,7 @@ func TestAPVSSCompactRangeProofV1(t *testing.T) {
 	}
 }
 
-func TestAPVSSCompactRangeProofRejectsMutationV1(t *testing.T) {
+func TestAPVSSCompactRangeProofRejectsMutationLegacy(t *testing.T) {
 	values := []uint64{0, 1, 2, 3}
 	statement, blindings, commitments := apvssCompactRangeFixture(t, values, 8)
 	proof, err := apvssProveCompactRange(statement, commitments, values, blindings, 8)
@@ -119,7 +119,7 @@ func TestAPVSSCompactRangeProofRejectsMutationV1(t *testing.T) {
 	})
 }
 
-func TestAPVSSCompactRangeProofRejectsOutOfRangeWitnessV1(t *testing.T) {
+func TestAPVSSCompactRangeProofRejectsOutOfRangeWitnessLegacy(t *testing.T) {
 	values := []uint64{256}
 	statement, blindings, commitments := apvssCompactRangeFixture(t, values, 8)
 	if _, err := apvssProveCompactRange(statement, commitments, values, blindings, 8); err == nil {

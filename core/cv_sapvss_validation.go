@@ -10,15 +10,13 @@ import (
 )
 
 const (
-	cvValidationStatementV2Domain   = "ARL-CV-sAPVSS/v2-scalar-group/validation-statement"
-	cvValidationCertificateV2Domain = "ARL-CV-sAPVSS/v2-scalar-group/validation-certificate"
+	cvValidationStatementScalarDomain   = "ARL-CV-sAPVSS/v2-scalar-group/validation-statement"
+	cvValidationCertificateScalarDomain = "ARL-CV-sAPVSS/v2-scalar-group/validation-certificate"
 )
 
-// cvValidationCertificateV2 certifies one aggregate object digest. The
-// bitmap is indexed by the deterministic validator sample, never by the full
-// old-committee roster. The sample is derived from the eligibility coin and
-// supplied again by the verifier.
-type cvValidationCertificateV2 struct {
+// cvValidationCertificateScalar certifies an aggregate digest. Its bitmap is
+// indexed by the deterministic validator sample.
+type cvValidationCertificateScalar struct {
 	SignerBitmap       []byte
 	AggregateSignature []byte
 	// canonicalWire is set by the strict decoder after validating the wire.
@@ -26,16 +24,16 @@ type cvValidationCertificateV2 struct {
 	canonicalWire []byte
 }
 
-type cvValidationBuildTimingsV2 struct {
+type cvValidationBuildTimingsScalar struct {
 	IndividualVerify time.Duration
 	AggregateVerify  time.Duration
 }
 
-func cvValidationStatementV2(validatorSample []int, header *cvAggregateHeaderV2) ([]byte, error) {
+func cvValidationStatementScalar(validatorSample []int, header *cvAggregateHeaderScalar) ([]byte, error) {
 	if !cvDistinctNonNegativeIDs(validatorSample) || len(validatorSample) == 0 {
 		return nil, fmt.Errorf("invalid CV V2 validation statement")
 	}
-	headerWire, err := cvAggregateHeaderV2CanonicalBytes(header)
+	headerWire, err := cvAggregateHeaderScalarCanonicalBytes(header)
 	if err != nil {
 		return nil, err
 	}
@@ -47,13 +45,13 @@ func cvValidationStatementV2(validatorSample []int, header *cvAggregateHeaderV2)
 		cvWriteUint64(&wire, uint64(member))
 	}
 	_ = cvWriteBytes(&wire, headerWire)
-	return hashBytes([]byte(cvValidationStatementV2Domain), wire.Bytes()), nil
+	return hashBytes([]byte(cvValidationStatementScalarDomain), wire.Bytes()), nil
 }
 
-func cvValidationCertificateV2CanonicalBytes(certificate *cvValidationCertificateV2, validatorSample []int) ([]byte, error) {
+func cvValidationCertificateScalarCanonicalBytes(certificate *cvValidationCertificateScalar, validatorSample []int) ([]byte, error) {
 	if certificate == nil || len(validatorSample) == 0 || !cvDistinctNonNegativeIDs(validatorSample) ||
-		len(certificate.SignerBitmap) != cvValidationBitmapBytesV2(len(validatorSample)) ||
-		!cvValidationBitmapHighBitsZeroV2(certificate.SignerBitmap, len(validatorSample)) ||
+		len(certificate.SignerBitmap) != cvValidationBitmapBytesScalar(len(validatorSample)) ||
+		!cvValidationBitmapHighBitsZeroScalar(certificate.SignerBitmap, len(validatorSample)) ||
 		len(certificate.AggregateSignature) != bls12381.SizeOfG1AffineCompressed {
 		return nil, fmt.Errorf("invalid CV V2 validation certificate")
 	}
@@ -66,28 +64,28 @@ func cvValidationCertificateV2CanonicalBytes(certificate *cvValidationCertificat
 		return nil, fmt.Errorf("invalid CV V2 validation aggregate signature")
 	}
 	var wire bytes.Buffer
-	_ = cvWriteBytes(&wire, []byte(cvValidationCertificateV2Domain))
+	_ = cvWriteBytes(&wire, []byte(cvValidationCertificateScalarDomain))
 	_ = cvWriteBytes(&wire, certificate.SignerBitmap)
 	_ = cvWriteBytes(&wire, certificate.AggregateSignature)
 	return wire.Bytes(), nil
 }
 
-func cvDecodeValidationCertificateV2(wire []byte, validatorSample []int) (*cvValidationCertificateV2, error) {
+func cvDecodeValidationCertificateScalar(wire []byte, validatorSample []int) (*cvValidationCertificateScalar, error) {
 	r := newCVWireReader(wire)
-	domain, err := r.bytes(len(cvValidationCertificateV2Domain))
-	if err != nil || !bytes.Equal(domain, []byte(cvValidationCertificateV2Domain)) {
+	domain, err := r.bytes(len(cvValidationCertificateScalarDomain))
+	if err != nil || !bytes.Equal(domain, []byte(cvValidationCertificateScalarDomain)) {
 		return nil, fmt.Errorf("invalid CV V2 validation certificate domain")
 	}
-	bitmap, err := r.bytes(cvValidationBitmapBytesV2(len(validatorSample)))
-	if err != nil || len(bitmap) != cvValidationBitmapBytesV2(len(validatorSample)) {
+	bitmap, err := r.bytes(cvValidationBitmapBytesScalar(len(validatorSample)))
+	if err != nil || len(bitmap) != cvValidationBitmapBytesScalar(len(validatorSample)) {
 		return nil, fmt.Errorf("invalid CV V2 validation certificate bitmap")
 	}
 	signature, err := r.bytes(bls12381.SizeOfG1AffineCompressed)
 	if err != nil || len(signature) != bls12381.SizeOfG1AffineCompressed || r.reader.Len() != 0 {
 		return nil, fmt.Errorf("invalid CV V2 validation certificate signature")
 	}
-	certificate := &cvValidationCertificateV2{SignerBitmap: bitmap, AggregateSignature: signature}
-	canonical, err := cvValidationCertificateV2CanonicalBytes(certificate, validatorSample)
+	certificate := &cvValidationCertificateScalar{SignerBitmap: bitmap, AggregateSignature: signature}
+	canonical, err := cvValidationCertificateScalarCanonicalBytes(certificate, validatorSample)
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 validation certificate")
 	}
@@ -95,30 +93,30 @@ func cvDecodeValidationCertificateV2(wire []byte, validatorSample []int) (*cvVal
 	return certificate, nil
 }
 
-func cvBuildValidationCertificateV2(
-	header *cvAggregateHeaderV2, validatorSample []int, quorum int,
-	signatures map[int][]byte, material *cvValidatorKeyMaterialV2,
-) (*cvValidationCertificateV2, error) {
-	certificate, _, err := cvBuildValidationCertificateModeV2(
+func cvBuildValidationCertificateScalar(
+	header *cvAggregateHeaderScalar, validatorSample []int, quorum int,
+	signatures map[int][]byte, material *cvValidatorKeyMaterialScalar,
+) (*cvValidationCertificateScalar, error) {
+	certificate, _, err := cvBuildValidationCertificateModeScalar(
 		header, validatorSample, quorum, signatures, material, true,
 	)
 	return certificate, err
 }
 
-func cvBuildValidationCertificateModeV2(
-	header *cvAggregateHeaderV2, validatorSample []int, quorum int,
-	signatures map[int][]byte, material *cvValidatorKeyMaterialV2, verifyIndividuals bool,
-) (*cvValidationCertificateV2, cvValidationBuildTimingsV2, error) {
-	var timings cvValidationBuildTimingsV2
+func cvBuildValidationCertificateModeScalar(
+	header *cvAggregateHeaderScalar, validatorSample []int, quorum int,
+	signatures map[int][]byte, material *cvValidatorKeyMaterialScalar, verifyIndividuals bool,
+) (*cvValidationCertificateScalar, cvValidationBuildTimingsScalar, error) {
+	var timings cvValidationBuildTimingsScalar
 	if material == nil || quorum <= 0 || quorum > len(validatorSample) || len(signatures) < quorum ||
-		!cvValidValidatorSampleV2(validatorSample, material) {
+		!cvValidValidatorSampleScalar(validatorSample, material) {
 		return nil, timings, fmt.Errorf("invalid CV V2 validation certificate construction")
 	}
-	statement, err := cvValidationStatementV2(validatorSample, header)
+	statement, err := cvValidationStatementScalar(validatorSample, header)
 	if err != nil {
 		return nil, timings, err
 	}
-	bitmap := make([]byte, cvValidationBitmapBytesV2(len(validatorSample)))
+	bitmap := make([]byte, cvValidationBitmapBytesScalar(len(validatorSample)))
 	var aggregate bls12381.G1Affine
 	aggregate.ScalarMultiplication(&genG1, big.NewInt(0))
 	signerCount := 0
@@ -129,9 +127,9 @@ func cvBuildValidationCertificateModeV2(
 		}
 		if verifyIndividuals {
 			started := time.Now()
-			valid := cvVerifyValidatorSignatureV2(
+			valid := cvVerifyValidatorSignatureScalar(
 				&material.publicKeys[material.memberIndex[member]],
-				cvValidationCertificateV2Domain, statement, signature,
+				cvValidationCertificateScalarDomain, statement, signature,
 			)
 			timings.IndividualVerify += time.Since(started)
 			if !valid {
@@ -147,7 +145,7 @@ func cvBuildValidationCertificateModeV2(
 	if signerCount < quorum || signerCount != len(signatures) {
 		return nil, timings, fmt.Errorf("insufficient or non-sample CV V2 validator signatures")
 	}
-	certificate := &cvValidationCertificateV2{
+	certificate := &cvValidationCertificateScalar{
 		SignerBitmap: bitmap,
 		AggregateSignature: func() []byte {
 			encoded := aggregate.Bytes()
@@ -155,7 +153,7 @@ func cvBuildValidationCertificateModeV2(
 		}(),
 	}
 	started := time.Now()
-	verifyErr := cvVerifyValidationCertificateV2(certificate, header, validatorSample, quorum, material)
+	verifyErr := cvVerifyValidationCertificateScalar(certificate, header, validatorSample, quorum, material)
 	timings.AggregateVerify = time.Since(started)
 	if verifyErr != nil {
 		return nil, timings, verifyErr
@@ -163,25 +161,25 @@ func cvBuildValidationCertificateModeV2(
 	return certificate, timings, nil
 }
 
-func cvVerifyValidationCertificateV2(certificate *cvValidationCertificateV2, header *cvAggregateHeaderV2, validatorSample []int, quorum int, material *cvValidatorKeyMaterialV2) error {
-	statement, err := cvValidationStatementV2(validatorSample, header)
+func cvVerifyValidationCertificateScalar(certificate *cvValidationCertificateScalar, header *cvAggregateHeaderScalar, validatorSample []int, quorum int, material *cvValidatorKeyMaterialScalar) error {
+	statement, err := cvValidationStatementScalar(validatorSample, header)
 	if err != nil {
 		return err
 	}
-	return cvVerifyValidationCertificateV2WithStatement(certificate, statement, validatorSample, quorum, material)
+	return cvVerifyValidationCertificateScalarWithStatement(certificate, statement, validatorSample, quorum, material)
 }
 
-// cvVerifyValidationCertificateV2WithStatement is used when the caller has
+// cvVerifyValidationCertificateScalarWithStatement is used when the caller has
 // already authenticated and cached the statement for this request. It keeps
 // all certificate/bitmap/pairing checks while avoiding a second header encode.
-func cvVerifyValidationCertificateV2WithStatement(certificate *cvValidationCertificateV2, statement []byte, validatorSample []int, quorum int, material *cvValidatorKeyMaterialV2) error {
-	if material == nil || quorum <= 0 || quorum > len(validatorSample) || !cvValidValidatorSampleV2(validatorSample, material) {
+func cvVerifyValidationCertificateScalarWithStatement(certificate *cvValidationCertificateScalar, statement []byte, validatorSample []int, quorum int, material *cvValidatorKeyMaterialScalar) error {
+	if material == nil || quorum <= 0 || quorum > len(validatorSample) || !cvValidValidatorSampleScalar(validatorSample, material) {
 		return fmt.Errorf("invalid CV V2 validation verification input")
 	}
 	if len(statement) != 32 {
 		return fmt.Errorf("invalid CV V2 validation statement")
 	}
-	if _, err := cvValidationCertificateV2CanonicalBytes(certificate, validatorSample); err != nil {
+	if _, err := cvValidationCertificateScalarCanonicalBytes(certificate, validatorSample); err != nil {
 		return err
 	}
 	signerCount := 0
@@ -199,7 +197,7 @@ func cvVerifyValidationCertificateV2WithStatement(certificate *cvValidationCerti
 	}
 	var signature bls12381.G1Affine
 	_, _ = signature.SetBytes(certificate.AggregateSignature)
-	hashPoint, err := bls12381.HashToG1(domainDigest(cvValidationCertificateV2Domain, statement), []byte(cvValidationCertificateV2Domain))
+	hashPoint, err := bls12381.HashToG1(domainDigest(cvValidationCertificateScalarDomain, statement), []byte(cvValidationCertificateScalarDomain))
 	if err != nil {
 		return err
 	}
@@ -215,7 +213,7 @@ func cvVerifyValidationCertificateV2WithStatement(certificate *cvValidationCerti
 	return nil
 }
 
-func cvSignValidationV2(memberID int, header *cvAggregateHeaderV2, validatorSample []int, material *cvValidatorKeyMaterialV2) ([]byte, error) {
+func cvSignValidationScalar(memberID int, header *cvAggregateHeaderScalar, validatorSample []int, material *cvValidatorKeyMaterialScalar) ([]byte, error) {
 	if material == nil {
 		return nil, fmt.Errorf("nil CV V2 validator material")
 	}
@@ -223,7 +221,7 @@ func cvSignValidationV2(memberID int, header *cvAggregateHeaderV2, validatorSamp
 	if !ok {
 		return nil, fmt.Errorf("CV V2 validator has no local signing secret")
 	}
-	if !cvValidValidatorSampleV2(validatorSample, material) {
+	if !cvValidValidatorSampleScalar(validatorSample, material) {
 		return nil, fmt.Errorf("invalid CV V2 validator sample")
 	}
 	memberPresent := false
@@ -233,22 +231,22 @@ func cvSignValidationV2(memberID int, header *cvAggregateHeaderV2, validatorSamp
 	if !memberPresent {
 		return nil, fmt.Errorf("CV V2 signer is outside validator sample")
 	}
-	statement, err := cvValidationStatementV2(validatorSample, header)
+	statement, err := cvValidationStatementScalar(validatorSample, header)
 	if err != nil {
 		return nil, err
 	}
-	return cvSignValidatorV2(secret, cvValidationCertificateV2Domain, statement)
+	return cvSignValidatorScalar(secret, cvValidationCertificateScalarDomain, statement)
 }
 
-func cvValidationBitmapBytesV2(sampleSize int) int {
+func cvValidationBitmapBytesScalar(sampleSize int) int {
 	if sampleSize <= 0 {
 		return 0
 	}
 	return (sampleSize + 7) / 8
 }
 
-func cvValidationBitmapHighBitsZeroV2(bitmap []byte, sampleSize int) bool {
-	if sampleSize <= 0 || len(bitmap) != cvValidationBitmapBytesV2(sampleSize) {
+func cvValidationBitmapHighBitsZeroScalar(bitmap []byte, sampleSize int) bool {
+	if sampleSize <= 0 || len(bitmap) != cvValidationBitmapBytesScalar(sampleSize) {
 		return false
 	}
 	unused := len(bitmap)*8 - sampleSize
@@ -269,7 +267,7 @@ func cvDistinctNonNegativeIDs(ids []int) bool {
 	return true
 }
 
-func cvValidValidatorSampleV2(sample []int, material *cvValidatorKeyMaterialV2) bool {
+func cvValidValidatorSampleScalar(sample []int, material *cvValidatorKeyMaterialScalar) bool {
 	if len(sample) == 0 || material == nil || !cvDistinctNonNegativeIDs(sample) {
 		return false
 	}

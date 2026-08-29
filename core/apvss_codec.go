@@ -15,24 +15,6 @@ func apvssHasLeafWireDomain(wire []byte) bool {
 	return err == nil && bytes.Equal(domain, []byte(apvssLeafWireDomain))
 }
 
-func apvssLaneOfferCanonicalBytes(offer *apvssLaneOffer, context *cvLeafContext) ([]byte, error) {
-	if context == nil || context.proofProfile != cvLeafStructuralProofProfile {
-		return nil, fmt.Errorf("APVSS lane offers require the structural proof profile")
-	}
-	leaf, err := apvssLaneOfferLeafView(context, offer)
-	if err != nil {
-		return nil, err
-	}
-	if _, err := apvssLaneStatementBytes(leaf, offer.receiverIndex); err != nil {
-		return nil, err
-	}
-	contextDigest := cvLeafContextDigest(context)
-	if len(contextDigest) != 32 {
-		return nil, fmt.Errorf("invalid APVSS lane offer context")
-	}
-	return apvssLaneOfferCanonicalBytesTrusted(offer, contextDigest)
-}
-
 // The caller must already have validated the structural leaf and context.
 func apvssLaneOfferCanonicalBytesTrusted(offer *apvssLaneOffer, contextDigest []byte) ([]byte, error) {
 	if offer == nil || len(contextDigest) != 32 || len(offer.leafDigest) != 32 ||

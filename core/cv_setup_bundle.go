@@ -16,11 +16,10 @@ func CVSetupBundleDigest(publicDir string) (string, error) {
 	})
 }
 
-// CVV2SetupBundleDigest identifies the three epoch-bound public registries
-// used by the scalar/group V2 protocol.
-func CVV2SetupBundleDigest(publicDir string) (string, error) {
+// CVScalarSetupBundleDigest identifies the epoch-bound public registries.
+func CVScalarSetupBundleDigest(publicDir string) (string, error) {
 	return cvSetupBundleDigest(publicDir, "ARL-ADKR/CV-V2-SETUP-BUNDLE/v1\x00", []string{
-		cvReceiverRegistryV2Filename, cvValidatorRegistryV2Filename, cvOldCommitteeKeyBundleV2Filename,
+		cvReceiverRegistryScalarFilename, cvValidatorRegistryScalarFilename, cvOldCommitteeKeyBundleScalarFilename,
 	})
 }
 

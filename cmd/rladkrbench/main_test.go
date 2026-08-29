@@ -20,15 +20,15 @@ func TestResultProtocolLatencyUsesSlowestLocalDecision(t *testing.T) {
 	}
 }
 
-func TestValidateCVV2BenchmarkShapeRejectsRotationAndResumeClaims(t *testing.T) {
-	if err := validateCVV2BenchmarkShape(1, 1); err != nil {
+func TestValidateCVScalarBenchmarkShapeRejectsRotationAndResumeClaims(t *testing.T) {
+	if err := validateCVScalarBenchmarkShape(1, 1); err != nil {
 		t.Fatalf("fresh single epoch rejected: %v", err)
 	}
 	for _, tc := range []struct {
 		runs   int
 		epochs int
 	}{{2, 1}, {1, 2}, {0, 1}, {1, 0}} {
-		err := validateCVV2BenchmarkShape(tc.runs, tc.epochs)
+		err := validateCVScalarBenchmarkShape(tc.runs, tc.epochs)
 		if err == nil || !strings.Contains(err.Error(), "key rotation and incomplete-epoch resume are unsupported") {
 			t.Fatalf("shape (%d,%d) did not fail with the experiment boundary: %v", tc.runs, tc.epochs, err)
 		}
@@ -178,7 +178,7 @@ func TestFormatBenchResultIncludesARLADKRMetrics(t *testing.T) {
 
 func TestFormatBenchResultIncludesCVPhaseLabels(t *testing.T) {
 	t.Setenv("RLADKR_APDB_PAYLOAD_HINTS", "1")
-	sampling, err := core.ResolveCVV2Sampling(7, 2, "smoke", 3, 3)
+	sampling, err := core.ResolveCVScalarSampling(7, 2, "smoke", 3, 3)
 	if err != nil {
 		t.Fatal(err)
 	}

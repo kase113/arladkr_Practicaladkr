@@ -422,10 +422,6 @@ func (t *tcpLoopbackTransport) sendRemoteOnConn(conn net.Conn, _ Message, frame 
 	return nil
 }
 
-func tcpLoopbackPoolKey(from int, to int, addr string) string {
-	return tcpLoopbackPoolKeyForTag(from, to, addr, "")
-}
-
 func tcpLoopbackPoolKeyForTag(from int, to int, addr, tag string) string {
 	return tcpLoopbackPoolKeyForLane(from, to, addr, tcpLoopbackLaneForTag(tag))
 }
@@ -463,10 +459,10 @@ func tcpBulkPoolLaneCount() int {
 func tcpLoopbackLaneForTag(tag string) int {
 	switch tag {
 	case cvTagComponentInit, cvTagComponentLeaf, cvTagComponentGet, cvTagRecoverGet,
-		cvTagRecoverShard, cvTagAPDBStoreV2, cvTagAPDBRecoverGetV2,
-		cvTagAPDBRecoverStoreV2, cvTagAggregateRecoverGetV2, cvTagAggregateRecoverCancelV2, cvTagAggregateRecoverStoreV2,
-		cvTagAggregatePayloadGetV2, cvTagAggregatePayloadV2,
-		cvTagAggregateShareV2, cvTagCertifiedCandidateV2:
+		cvTagRecoverShard, cvTagAPDBStoreScalar, cvTagAPDBRecoverGetScalar,
+		cvTagAPDBRecoverStoreScalar, cvTagAggregateRecoverGetScalar, cvTagAggregateRecoverCancelScalar, cvTagAggregateRecoverStoreScalar,
+		cvTagAggregatePayloadGetScalar, cvTagAggregatePayloadScalar,
+		cvTagAggregateShareScalar, cvTagCertifiedCandidateScalar:
 		return 1
 	default:
 		return 0

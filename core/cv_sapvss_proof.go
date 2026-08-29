@@ -476,10 +476,6 @@ func pointPtr(point bls12381.G1Affine) *bls12381.G1Affine {
 	return &point
 }
 
-func cvVerifySharing(leaf *cvLeaf, proof *cvSharingProof) error {
-	return cvVerifySharingPoints(leaf, proof, true)
-}
-
 func cvVerifySharingValidatedPoints(leaf *cvLeaf, proof *cvSharingProof) error {
 	return cvVerifySharingPoints(leaf, proof, false)
 }
@@ -854,14 +850,12 @@ func cvVerifyExactRangePoints(leaf *cvLeaf, proof *cvExactRangeProof, validatePo
 		link := &proof.links[chunk]
 		for receiver := 0; receiver < receivers; receiver++ {
 			r := &leaf.receivers[receiver].encryptedShare.scalarChunks[chunk].r
-			var lhsCoin bls12381.G1Affine
-			lhsCoin = cvPointSum(&link.tCoin, pointPtr(cvPointTimes(r, &challenge)))
+			lhsCoin := cvPointSum(&link.tCoin, pointPtr(cvPointTimes(r, &challenge)))
 			rhsCoin := cvPointTimes(&genG1, &link.zCoin)
 			if !lhsCoin.Equal(&rhsCoin) {
 				return fmt.Errorf("invalid CV-sAPVSS exact range coin link %d/%d", chunk, receiver)
 			}
-			var dPoint bls12381.G1Affine
-			dPoint = cvRangeCommitmentPoint(proof, receiver, chunk, chunks, bits)
+			dPoint := cvRangeCommitmentPoint(proof, receiver, chunk, chunks, bits)
 			lhsCommitment := cvPointSum(
 				&link.tCommitments[receiver],
 				pointPtr(cvPointTimes(&dPoint, &challenge)),
@@ -1101,10 +1095,6 @@ func cvProveChunking(
 		zDigits: zDigits,
 		zBeta:   zBeta,
 	}, nil
-}
-
-func cvVerifyChunking(leaf *cvLeaf, proof *cvChunkingProof) error {
-	return cvVerifyChunkingPoints(leaf, proof, true)
 }
 
 func cvVerifyChunkingValidatedPoints(leaf *cvLeaf, proof *cvChunkingProof) error {

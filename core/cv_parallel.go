@@ -10,16 +10,16 @@ import (
 	"time"
 )
 
-const cvDefaultACKSettleGraceV2 = 250 * time.Millisecond
+const cvDefaultACKSettleGraceScalar = 250 * time.Millisecond
 
-func cvACKSettleGraceV2() time.Duration {
+func cvACKSettleGraceScalar() time.Duration {
 	raw := strings.TrimSpace(os.Getenv("RLADKR_ACK_SETTLE_GRACE_MS"))
 	if raw == "" {
-		return cvDefaultACKSettleGraceV2
+		return cvDefaultACKSettleGraceScalar
 	}
 	milliseconds, err := strconv.Atoi(raw)
 	if err != nil || milliseconds < 0 {
-		return cvDefaultACKSettleGraceV2
+		return cvDefaultACKSettleGraceScalar
 	}
 	if milliseconds > 250 {
 		milliseconds = 250

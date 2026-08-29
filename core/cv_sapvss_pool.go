@@ -6,15 +6,15 @@ import (
 )
 
 const (
-	cvComponentHeaderV2Domain = "ARL-CV-sAPVSS/v2-scalar-group/component-header"
-	cvComponentRefV2Domain    = "ARL-CV-sAPVSS/v2-scalar-group/component-ref"
-	cvPoolV2Domain            = "ARL-CV-sAPVSS/v2-scalar-group/pool"
-	cvPoolDigestV2Domain      = "ARL-CV-sAPVSS/v2-scalar-group/pool-digest"
-	cvPoolCertV2Domain        = "ARL-CV-sAPVSS/v2-scalar-group/pool-cert"
-	cvPoolCertShareV2Domain   = "ARL-CV-sAPVSS/v2-scalar-group/pool-cert-share-wire"
+	cvComponentHeaderScalarDomain = "ARL-CV-sAPVSS/v2-scalar-group/component-header"
+	cvComponentRefScalarDomain    = "ARL-CV-sAPVSS/v2-scalar-group/component-ref"
+	cvPoolScalarDomain            = "ARL-CV-sAPVSS/v2-scalar-group/pool"
+	cvPoolDigestScalarDomain      = "ARL-CV-sAPVSS/v2-scalar-group/pool-digest"
+	cvPoolCertScalarDomain        = "ARL-CV-sAPVSS/v2-scalar-group/pool-cert"
+	cvPoolCertShareScalarDomain   = "ARL-CV-sAPVSS/v2-scalar-group/pool-cert-share-wire"
 )
 
-type cvComponentHeaderV2 struct {
+type cvComponentHeaderScalar struct {
 	ContextDigest []byte
 	DealerID      int
 	PayloadDigest []byte
@@ -22,47 +22,47 @@ type cvComponentHeaderV2 struct {
 	Root          []byte
 }
 
-type cvComponentRefV2 struct {
-	Header cvComponentHeaderV2
-	Lock   cvAPDBLockV2
+type cvComponentRefScalar struct {
+	Header cvComponentHeaderScalar
+	Lock   cvAPDBLockScalar
 }
 
-type cvPoolV2 struct {
+type cvPoolScalar struct {
 	ContextDigest []byte
 	ProposerID    int
-	Components    []cvComponentRefV2
+	Components    []cvComponentRefScalar
 	Digest        []byte
 }
 
-type cvPoolCertificateV2 struct {
+type cvPoolCertificateScalar struct {
 	PoolDigest    []byte
 	Certificate   []byte
 	canonicalWire []byte
 }
 
-type cvPoolCertificateShareV2 struct {
+type cvPoolCertificateShareScalar struct {
 	ProposerID int
 	PoolDigest []byte
 	Signature  []byte
 }
 
-func cvPoolCertificateShareV2CanonicalBytes(share *cvPoolCertificateShareV2) ([]byte, error) {
+func cvPoolCertificateShareScalarCanonicalBytes(share *cvPoolCertificateShareScalar) ([]byte, error) {
 	if share == nil || share.ProposerID < 0 || len(share.PoolDigest) != 32 || len(share.Signature) == 0 ||
 		len(share.Signature) > cvMaxComponentSignatureBytes {
 		return nil, fmt.Errorf("invalid CV V2 pool certificate share")
 	}
 	var wire bytes.Buffer
-	_ = cvWriteBytes(&wire, []byte(cvPoolCertShareV2Domain))
+	_ = cvWriteBytes(&wire, []byte(cvPoolCertShareScalarDomain))
 	cvWriteUint64(&wire, uint64(share.ProposerID))
 	_ = cvWriteBytes(&wire, share.PoolDigest)
 	_ = cvWriteBytes(&wire, share.Signature)
 	return wire.Bytes(), nil
 }
 
-func cvDecodePoolCertificateShareV2(wire []byte) (*cvPoolCertificateShareV2, error) {
+func cvDecodePoolCertificateShareScalar(wire []byte) (*cvPoolCertificateShareScalar, error) {
 	r := newCVWireReader(wire)
-	domain, err := r.bytes(len(cvPoolCertShareV2Domain))
-	if err != nil || !bytes.Equal(domain, []byte(cvPoolCertShareV2Domain)) {
+	domain, err := r.bytes(len(cvPoolCertShareScalarDomain))
+	if err != nil || !bytes.Equal(domain, []byte(cvPoolCertShareScalarDomain)) {
 		return nil, fmt.Errorf("invalid CV V2 pool certificate share domain")
 	}
 	proposer, err := r.uint64()
@@ -77,41 +77,41 @@ func cvDecodePoolCertificateShareV2(wire []byte) (*cvPoolCertificateShareV2, err
 	if err != nil || len(signature) == 0 || r.reader.Len() != 0 {
 		return nil, fmt.Errorf("invalid CV V2 pool certificate share signature")
 	}
-	share := &cvPoolCertificateShareV2{ProposerID: int(proposer), PoolDigest: digest, Signature: signature}
-	canonical, err := cvPoolCertificateShareV2CanonicalBytes(share)
+	share := &cvPoolCertificateShareScalar{ProposerID: int(proposer), PoolDigest: digest, Signature: signature}
+	canonical, err := cvPoolCertificateShareScalarCanonicalBytes(share)
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 pool certificate share")
 	}
 	return share, nil
 }
 
-type cvPoolSlotStateV2 struct {
+type cvPoolSlotStateScalar struct {
 	poolDigest []byte
 	poolSeen   bool
 	signed     bool
 	certSeen   bool
 }
 
-func cvComponentInstanceDigestV2(contextDigest []byte, dealerID int) ([]byte, error) {
+func cvComponentInstanceDigestScalar(contextDigest []byte, dealerID int) ([]byte, error) {
 	if len(contextDigest) != 32 || dealerID < 0 {
 		return nil, fmt.Errorf("invalid CV V2 component instance input")
 	}
 	var dealer bytes.Buffer
 	cvWriteUint64(&dealer, uint64(dealerID))
-	return cvAPDBInstanceDigestV2("COMP", contextDigest, dealer.Bytes())
+	return cvAPDBInstanceDigestScalar("COMP", contextDigest, dealer.Bytes())
 }
 
-func cvComponentHeaderV2CanonicalBytes(header cvComponentHeaderV2) ([]byte, error) {
+func cvComponentHeaderScalarCanonicalBytes(header cvComponentHeaderScalar) ([]byte, error) {
 	if len(header.ContextDigest) != 32 || header.DealerID < 0 || len(header.PayloadDigest) != 32 ||
 		len(header.Instance) != 32 || len(header.Root) != 32 {
 		return nil, fmt.Errorf("invalid CV V2 component header")
 	}
-	wantInstance, err := cvComponentInstanceDigestV2(header.ContextDigest, header.DealerID)
+	wantInstance, err := cvComponentInstanceDigestScalar(header.ContextDigest, header.DealerID)
 	if err != nil || !bytes.Equal(wantInstance, header.Instance) {
 		return nil, fmt.Errorf("CV V2 component header instance mismatch")
 	}
 	var wire bytes.Buffer
-	_ = cvWriteBytes(&wire, []byte(cvComponentHeaderV2Domain))
+	_ = cvWriteBytes(&wire, []byte(cvComponentHeaderScalarDomain))
 	_ = cvWriteBytes(&wire, header.ContextDigest)
 	cvWriteUint64(&wire, uint64(header.DealerID))
 	_ = cvWriteBytes(&wire, header.PayloadDigest)
@@ -120,103 +120,103 @@ func cvComponentHeaderV2CanonicalBytes(header cvComponentHeaderV2) ([]byte, erro
 	return wire.Bytes(), nil
 }
 
-func cvDecodeComponentHeaderV2(wire []byte) (cvComponentHeaderV2, error) {
+func cvDecodeComponentHeaderScalar(wire []byte) (cvComponentHeaderScalar, error) {
 	r := newCVWireReader(wire)
-	domain, err := r.bytes(len(cvComponentHeaderV2Domain))
-	if err != nil || !bytes.Equal(domain, []byte(cvComponentHeaderV2Domain)) {
-		return cvComponentHeaderV2{}, fmt.Errorf("invalid CV V2 component header domain")
+	domain, err := r.bytes(len(cvComponentHeaderScalarDomain))
+	if err != nil || !bytes.Equal(domain, []byte(cvComponentHeaderScalarDomain)) {
+		return cvComponentHeaderScalar{}, fmt.Errorf("invalid CV V2 component header domain")
 	}
 	context, err := r.bytes(32)
 	if err != nil || len(context) != 32 {
-		return cvComponentHeaderV2{}, fmt.Errorf("invalid CV V2 component header context")
+		return cvComponentHeaderScalar{}, fmt.Errorf("invalid CV V2 component header context")
 	}
 	dealer, err := r.uint64()
 	if err != nil || dealer > uint64(^uint(0)>>1) {
-		return cvComponentHeaderV2{}, fmt.Errorf("invalid CV V2 component header dealer")
+		return cvComponentHeaderScalar{}, fmt.Errorf("invalid CV V2 component header dealer")
 	}
 	payload, err := r.bytes(32)
 	if err != nil || len(payload) != 32 {
-		return cvComponentHeaderV2{}, fmt.Errorf("invalid CV V2 component header payload")
+		return cvComponentHeaderScalar{}, fmt.Errorf("invalid CV V2 component header payload")
 	}
 	instance, err := r.bytes(32)
 	if err != nil || len(instance) != 32 {
-		return cvComponentHeaderV2{}, fmt.Errorf("invalid CV V2 component header instance")
+		return cvComponentHeaderScalar{}, fmt.Errorf("invalid CV V2 component header instance")
 	}
 	root, err := r.bytes(32)
 	if err != nil || len(root) != 32 || r.reader.Len() != 0 {
-		return cvComponentHeaderV2{}, fmt.Errorf("invalid CV V2 component header root")
+		return cvComponentHeaderScalar{}, fmt.Errorf("invalid CV V2 component header root")
 	}
-	header := cvComponentHeaderV2{ContextDigest: context, DealerID: int(dealer), PayloadDigest: payload, Instance: instance, Root: root}
-	canonical, err := cvComponentHeaderV2CanonicalBytes(header)
+	header := cvComponentHeaderScalar{ContextDigest: context, DealerID: int(dealer), PayloadDigest: payload, Instance: instance, Root: root}
+	canonical, err := cvComponentHeaderScalarCanonicalBytes(header)
 	if err != nil || !bytes.Equal(canonical, wire) {
-		return cvComponentHeaderV2{}, fmt.Errorf("non-canonical CV V2 component header")
+		return cvComponentHeaderScalar{}, fmt.Errorf("non-canonical CV V2 component header")
 	}
 	return header, nil
 }
 
-func cvComponentRefV2CanonicalBytes(ref cvComponentRefV2) ([]byte, error) {
-	headerWire, err := cvComponentHeaderV2CanonicalBytes(ref.Header)
+func cvComponentRefScalarCanonicalBytes(ref cvComponentRefScalar) ([]byte, error) {
+	headerWire, err := cvComponentHeaderScalarCanonicalBytes(ref.Header)
 	if err != nil {
 		return nil, err
 	}
-	lockWire, err := cvAPDBLockV2CanonicalBytes(&ref.Lock)
+	lockWire, err := cvAPDBLockScalarCanonicalBytes(&ref.Lock)
 	if err != nil || !bytes.Equal(ref.Header.Instance, ref.Lock.InstanceDigest) || !bytes.Equal(ref.Header.Root, ref.Lock.Root) {
 		return nil, fmt.Errorf("invalid CV V2 component reference lock")
 	}
 	var wire bytes.Buffer
-	_ = cvWriteBytes(&wire, []byte(cvComponentRefV2Domain))
+	_ = cvWriteBytes(&wire, []byte(cvComponentRefScalarDomain))
 	_ = cvWriteBytes(&wire, headerWire)
 	_ = cvWriteBytes(&wire, lockWire)
 	return wire.Bytes(), nil
 }
 
-func cvDecodeComponentRefV2(wire []byte) (cvComponentRefV2, error) {
+func cvDecodeComponentRefScalar(wire []byte) (cvComponentRefScalar, error) {
 	r := newCVWireReader(wire)
-	domain, err := r.bytes(len(cvComponentRefV2Domain))
-	if err != nil || !bytes.Equal(domain, []byte(cvComponentRefV2Domain)) {
-		return cvComponentRefV2{}, fmt.Errorf("invalid CV V2 component reference domain")
+	domain, err := r.bytes(len(cvComponentRefScalarDomain))
+	if err != nil || !bytes.Equal(domain, []byte(cvComponentRefScalarDomain)) {
+		return cvComponentRefScalar{}, fmt.Errorf("invalid CV V2 component reference domain")
 	}
 	headerWire, err := r.bytes(cvMaxNetworkPayloadBytes)
 	if err != nil {
-		return cvComponentRefV2{}, fmt.Errorf("invalid CV V2 component reference header")
+		return cvComponentRefScalar{}, fmt.Errorf("invalid CV V2 component reference header")
 	}
-	header, err := cvDecodeComponentHeaderV2(headerWire)
+	header, err := cvDecodeComponentHeaderScalar(headerWire)
 	if err != nil {
-		return cvComponentRefV2{}, err
+		return cvComponentRefScalar{}, err
 	}
 	lockWire, err := r.bytes(cvMaxComponentSignatureBytes + 256)
 	if err != nil || r.reader.Len() != 0 {
-		return cvComponentRefV2{}, fmt.Errorf("invalid CV V2 component reference lock")
+		return cvComponentRefScalar{}, fmt.Errorf("invalid CV V2 component reference lock")
 	}
-	lock, err := cvDecodeAPDBLockV2(lockWire)
+	lock, err := cvDecodeAPDBLockScalar(lockWire)
 	if err != nil {
-		return cvComponentRefV2{}, err
+		return cvComponentRefScalar{}, err
 	}
-	ref := cvComponentRefV2{Header: header, Lock: *lock}
-	canonical, err := cvComponentRefV2CanonicalBytes(ref)
+	ref := cvComponentRefScalar{Header: header, Lock: *lock}
+	canonical, err := cvComponentRefScalarCanonicalBytes(ref)
 	if err != nil || !bytes.Equal(canonical, wire) {
-		return cvComponentRefV2{}, fmt.Errorf("non-canonical CV V2 component reference")
+		return cvComponentRefScalar{}, fmt.Errorf("non-canonical CV V2 component reference")
 	}
 	return ref, nil
 }
 
-func cvValidateComponentRefV2(ref cvComponentRefV2, apdbSigner *tblsThresholdSigner) error {
-	if _, err := cvComponentRefV2CanonicalBytes(ref); err != nil {
+func cvValidateComponentRefScalar(ref cvComponentRefScalar, apdbSigner *tblsThresholdSigner) error {
+	if _, err := cvComponentRefScalarCanonicalBytes(ref); err != nil {
 		return err
 	}
 	if apdbSigner != nil {
-		return cvVerifyAPDBLockV2(&ref.Lock, apdbSigner)
+		return cvVerifyAPDBLockScalar(&ref.Lock, apdbSigner)
 	}
 	return nil
 }
 
-func cvPoolV2CanonicalBytes(pool *cvPoolV2, params cvV2Params) ([]byte, error) {
+func cvPoolScalarCanonicalBytes(pool *cvPoolScalar, params cvScalarParams) ([]byte, error) {
 	if pool == nil || len(pool.ContextDigest) != 32 || pool.ProposerID < 0 ||
 		len(pool.Components) != params.poolSize || len(pool.Digest) != 32 {
 		return nil, fmt.Errorf("invalid CV V2 pool")
 	}
 	var unsigned bytes.Buffer
-	_ = cvWriteBytes(&unsigned, []byte(cvPoolV2Domain))
+	_ = cvWriteBytes(&unsigned, []byte(cvPoolScalarDomain))
 	_ = cvWriteBytes(&unsigned, pool.ContextDigest)
 	cvWriteUint64(&unsigned, uint64(pool.ProposerID))
 	if err := cvWriteUint32(&unsigned, len(pool.Components)); err != nil {
@@ -227,14 +227,14 @@ func cvPoolV2CanonicalBytes(pool *cvPoolV2, params cvV2Params) ([]byte, error) {
 		if ref.Header.DealerID <= lastDealer || !bytes.Equal(ref.Header.ContextDigest, pool.ContextDigest) {
 			return nil, fmt.Errorf("invalid CV V2 pool component order")
 		}
-		refWire, err := cvComponentRefV2CanonicalBytes(ref)
+		refWire, err := cvComponentRefScalarCanonicalBytes(ref)
 		if err != nil {
 			return nil, err
 		}
 		_ = cvWriteBytes(&unsigned, refWire)
 		lastDealer = ref.Header.DealerID
 	}
-	wantDigest := hashBytes([]byte(cvPoolDigestV2Domain), unsigned.Bytes())
+	wantDigest := hashBytes([]byte(cvPoolDigestScalarDomain), unsigned.Bytes())
 	if !bytes.Equal(pool.Digest, wantDigest) {
 		return nil, fmt.Errorf("CV V2 pool digest mismatch")
 	}
@@ -244,14 +244,14 @@ func cvPoolV2CanonicalBytes(pool *cvPoolV2, params cvV2Params) ([]byte, error) {
 	return wire.Bytes(), nil
 }
 
-func cvBuildPoolV2(contextDigest []byte, proposerID int, components []cvComponentRefV2, params cvV2Params) (*cvPoolV2, error) {
-	pool := &cvPoolV2{ContextDigest: append([]byte(nil), contextDigest...), ProposerID: proposerID,
-		Components: append([]cvComponentRefV2(nil), components...)}
+func cvBuildPoolScalar(contextDigest []byte, proposerID int, components []cvComponentRefScalar, params cvScalarParams) (*cvPoolScalar, error) {
+	pool := &cvPoolScalar{ContextDigest: append([]byte(nil), contextDigest...), ProposerID: proposerID,
+		Components: append([]cvComponentRefScalar(nil), components...)}
 	if len(pool.ContextDigest) != 32 || len(pool.Components) != params.poolSize {
 		return nil, fmt.Errorf("invalid CV V2 pool construction")
 	}
 	var unsigned bytes.Buffer
-	_ = cvWriteBytes(&unsigned, []byte(cvPoolV2Domain))
+	_ = cvWriteBytes(&unsigned, []byte(cvPoolScalarDomain))
 	_ = cvWriteBytes(&unsigned, pool.ContextDigest)
 	cvWriteUint64(&unsigned, uint64(pool.ProposerID))
 	if err := cvWriteUint32(&unsigned, len(pool.Components)); err != nil {
@@ -262,21 +262,21 @@ func cvBuildPoolV2(contextDigest []byte, proposerID int, components []cvComponen
 		if ref.Header.DealerID <= lastDealer || !bytes.Equal(ref.Header.ContextDigest, pool.ContextDigest) {
 			return nil, fmt.Errorf("invalid CV V2 pool construction order")
 		}
-		refWire, err := cvComponentRefV2CanonicalBytes(ref)
+		refWire, err := cvComponentRefScalarCanonicalBytes(ref)
 		if err != nil {
 			return nil, err
 		}
 		_ = cvWriteBytes(&unsigned, refWire)
 		lastDealer = ref.Header.DealerID
 	}
-	pool.Digest = hashBytes([]byte(cvPoolDigestV2Domain), unsigned.Bytes())
-	if _, err := cvPoolV2CanonicalBytes(pool, params); err != nil {
+	pool.Digest = hashBytes([]byte(cvPoolDigestScalarDomain), unsigned.Bytes())
+	if _, err := cvPoolScalarCanonicalBytes(pool, params); err != nil {
 		return nil, err
 	}
 	return pool, nil
 }
 
-func cvDecodePoolV2(wire []byte, params cvV2Params) (*cvPoolV2, error) {
+func cvDecodePoolScalar(wire []byte, params cvScalarParams) (*cvPoolScalar, error) {
 	r := newCVWireReader(wire)
 	unsignedWire, err := r.bytes(cvMaxNetworkPayloadBytes)
 	if err != nil {
@@ -287,8 +287,8 @@ func cvDecodePoolV2(wire []byte, params cvV2Params) (*cvPoolV2, error) {
 		return nil, fmt.Errorf("invalid CV V2 pool digest")
 	}
 	unsigned := newCVWireReader(unsignedWire)
-	domain, err := unsigned.bytes(len(cvPoolV2Domain))
-	if err != nil || !bytes.Equal(domain, []byte(cvPoolV2Domain)) {
+	domain, err := unsigned.bytes(len(cvPoolScalarDomain))
+	if err != nil || !bytes.Equal(domain, []byte(cvPoolScalarDomain)) {
 		return nil, fmt.Errorf("invalid CV V2 pool domain")
 	}
 	context, err := unsigned.bytes(32)
@@ -303,13 +303,13 @@ func cvDecodePoolV2(wire []byte, params cvV2Params) (*cvPoolV2, error) {
 	if err != nil || count != params.poolSize {
 		return nil, fmt.Errorf("invalid CV V2 pool component count")
 	}
-	components := make([]cvComponentRefV2, count)
+	components := make([]cvComponentRefScalar, count)
 	for i := range components {
 		refWire, readErr := unsigned.bytes(cvMaxNetworkPayloadBytes)
 		if readErr != nil {
 			return nil, fmt.Errorf("invalid CV V2 pool component")
 		}
-		components[i], readErr = cvDecodeComponentRefV2(refWire)
+		components[i], readErr = cvDecodeComponentRefScalar(refWire)
 		if readErr != nil {
 			return nil, readErr
 		}
@@ -317,15 +317,15 @@ func cvDecodePoolV2(wire []byte, params cvV2Params) (*cvPoolV2, error) {
 	if unsigned.reader.Len() != 0 {
 		return nil, fmt.Errorf("invalid CV V2 pool unsigned suffix")
 	}
-	pool := &cvPoolV2{ContextDigest: context, ProposerID: int(proposer), Components: components, Digest: digest}
-	canonical, err := cvPoolV2CanonicalBytes(pool, params)
+	pool := &cvPoolScalar{ContextDigest: context, ProposerID: int(proposer), Components: components, Digest: digest}
+	canonical, err := cvPoolScalarCanonicalBytes(pool, params)
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 pool")
 	}
 	return pool, nil
 }
 
-func cvPoolCertificateV2CanonicalBytes(certificate *cvPoolCertificateV2) ([]byte, error) {
+func cvPoolCertificateScalarCanonicalBytes(certificate *cvPoolCertificateScalar) ([]byte, error) {
 	if certificate == nil || len(certificate.PoolDigest) != 32 || len(certificate.Certificate) == 0 ||
 		len(certificate.Certificate) > cvMaxComponentSignatureBytes {
 		return nil, fmt.Errorf("invalid CV V2 pool certificate")
@@ -334,16 +334,16 @@ func cvPoolCertificateV2CanonicalBytes(certificate *cvPoolCertificateV2) ([]byte
 		return certificate.canonicalWire, nil
 	}
 	var wire bytes.Buffer
-	_ = cvWriteBytes(&wire, []byte(cvPoolCertV2Domain))
+	_ = cvWriteBytes(&wire, []byte(cvPoolCertScalarDomain))
 	_ = cvWriteBytes(&wire, certificate.PoolDigest)
 	_ = cvWriteBytes(&wire, certificate.Certificate)
 	return wire.Bytes(), nil
 }
 
-func cvDecodePoolCertificateV2(wire []byte) (*cvPoolCertificateV2, error) {
+func cvDecodePoolCertificateScalar(wire []byte) (*cvPoolCertificateScalar, error) {
 	r := newCVWireReader(wire)
-	domain, err := r.bytes(len(cvPoolCertV2Domain))
-	if err != nil || !bytes.Equal(domain, []byte(cvPoolCertV2Domain)) {
+	domain, err := r.bytes(len(cvPoolCertScalarDomain))
+	if err != nil || !bytes.Equal(domain, []byte(cvPoolCertScalarDomain)) {
 		return nil, fmt.Errorf("invalid CV V2 pool certificate domain")
 	}
 	digest, err := r.bytes(32)
@@ -354,8 +354,8 @@ func cvDecodePoolCertificateV2(wire []byte) (*cvPoolCertificateV2, error) {
 	if err != nil || len(certificateWire) == 0 || r.reader.Len() != 0 {
 		return nil, fmt.Errorf("invalid CV V2 pool certificate signature")
 	}
-	certificate := &cvPoolCertificateV2{PoolDigest: digest, Certificate: certificateWire}
-	canonical, err := cvPoolCertificateV2CanonicalBytes(certificate)
+	certificate := &cvPoolCertificateScalar{PoolDigest: digest, Certificate: certificateWire}
+	canonical, err := cvPoolCertificateScalarCanonicalBytes(certificate)
 	if err != nil || !bytes.Equal(canonical, wire) {
 		return nil, fmt.Errorf("non-canonical CV V2 pool certificate")
 	}
@@ -363,7 +363,7 @@ func cvDecodePoolCertificateV2(wire []byte) (*cvPoolCertificateV2, error) {
 	return certificate, nil
 }
 
-func cvPoolCertificateStatementV2(contextDigest []byte, proposerID int, poolDigest []byte) ([]byte, error) {
+func cvPoolCertificateStatementScalar(contextDigest []byte, proposerID int, poolDigest []byte) ([]byte, error) {
 	if len(contextDigest) != 32 || proposerID < 0 || len(poolDigest) != 32 {
 		return nil, fmt.Errorf("invalid CV V2 pool certificate statement")
 	}
@@ -371,21 +371,21 @@ func cvPoolCertificateStatementV2(contextDigest []byte, proposerID int, poolDige
 	_ = cvWriteBytes(&wire, contextDigest)
 	cvWriteUint64(&wire, uint64(proposerID))
 	_ = cvWriteBytes(&wire, poolDigest)
-	return hashBytes([]byte(cvPoolCertV2Domain), wire.Bytes()), nil
+	return hashBytes([]byte(cvPoolCertScalarDomain), wire.Bytes()), nil
 }
 
-func cvVerifyPoolCertificateV2(pool *cvPoolV2, certificate *cvPoolCertificateV2, controlSigner *tblsThresholdSigner) error {
-	if pool == nil || certificate == nil || !cvV2SignerHasRole(controlSigner, cvV2RoleControl) || !bytes.Equal(pool.Digest, certificate.PoolDigest) {
+func cvVerifyPoolCertificateScalar(pool *cvPoolScalar, certificate *cvPoolCertificateScalar, controlSigner *tblsThresholdSigner) error {
+	if pool == nil || certificate == nil || !cvScalarSignerHasRole(controlSigner, cvScalarRoleControl) || !bytes.Equal(pool.Digest, certificate.PoolDigest) {
 		return fmt.Errorf("invalid CV V2 pool certificate")
 	}
-	statement, err := cvPoolCertificateStatementV2(pool.ContextDigest, pool.ProposerID, pool.Digest)
-	if err != nil || !controlSigner.VerifyRecovered(cvPoolCertV2Domain, statement, certificate.Certificate) {
+	statement, err := cvPoolCertificateStatementScalar(pool.ContextDigest, pool.ProposerID, pool.Digest)
+	if err != nil || !controlSigner.VerifyRecovered(cvPoolCertScalarDomain, statement, certificate.Certificate) {
 		return fmt.Errorf("invalid CV V2 pool certificate signature")
 	}
 	return nil
 }
 
-func (state *cvPoolSlotStateV2) observePool(pool *cvPoolV2) error {
+func (state *cvPoolSlotStateScalar) observePool(pool *cvPoolScalar) error {
 	if state == nil || pool == nil || len(pool.Digest) != 32 {
 		return fmt.Errorf("invalid CV V2 pool slot input")
 	}
@@ -399,7 +399,7 @@ func (state *cvPoolSlotStateV2) observePool(pool *cvPoolV2) error {
 	return nil
 }
 
-func (state *cvPoolSlotStateV2) markSigned(poolDigest []byte) error {
+func (state *cvPoolSlotStateScalar) markSigned(poolDigest []byte) error {
 	if state == nil || !state.poolSeen || !bytes.Equal(state.poolDigest, poolDigest) || state.signed {
 		return fmt.Errorf("invalid CV V2 pool slot signature transition")
 	}
@@ -407,7 +407,7 @@ func (state *cvPoolSlotStateV2) markSigned(poolDigest []byte) error {
 	return nil
 }
 
-func (state *cvPoolSlotStateV2) observeCertificate(certificate *cvPoolCertificateV2) error {
+func (state *cvPoolSlotStateScalar) observeCertificate(certificate *cvPoolCertificateScalar) error {
 	if state == nil || !state.poolSeen || certificate == nil || !bytes.Equal(state.poolDigest, certificate.PoolDigest) {
 		return fmt.Errorf("conflicting CV V2 pool certificate for proposer slot")
 	}

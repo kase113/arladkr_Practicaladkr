@@ -6,35 +6,35 @@ import (
 	"testing"
 )
 
-func TestCVAPDBHolderStoreV2PersistsBeforeStoredShareAndRejectsRootConflict(t *testing.T) {
-	cfg := cvV2ParamsTestConfig()
-	params, err := cvDeriveV2Params(cfg)
+func TestCVAPDBHolderStoreScalarPersistsBeforeStoredShareAndRejectsRootConflict(t *testing.T) {
+	cfg := cvScalarParamsTestConfig()
+	params, err := cvDeriveScalarParams(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	publicDir := filepath.Join(t.TempDir(), "public")
 	secretDir := filepath.Join(t.TempDir(), "secret")
-	if err := cvGenerateOldCommitteeKeyBundleV2(publicDir, secretDir, cfg.SID, uint64(cfg.Epoch), cfg.OldCommittee, params); err != nil {
+	if err := cvGenerateOldCommitteeKeyBundleScalar(publicDir, secretDir, cfg.SID, uint64(cfg.Epoch), cfg.OldCommittee, params); err != nil {
 		t.Fatal(err)
 	}
-	bundle, err := cvLoadOldCommitteeKeyBundleV2(publicDir, secretDir, cfg.SID, uint64(cfg.Epoch), cfg.OldCommittee, cfg.OldCommittee, params)
+	bundle, err := cvLoadOldCommitteeKeyBundleScalar(publicDir, secretDir, cfg.SID, uint64(cfg.Epoch), cfg.OldCommittee, cfg.OldCommittee, params)
 	if err != nil {
 		t.Fatal(err)
 	}
-	signer, err := newTBLSThresholdSignerFromV2Material(bundle.apdb)
+	signer, err := newTBLSThresholdSignerFromScalarMaterial(bundle.apdb)
 	if err != nil {
 		t.Fatal(err)
 	}
-	instance, err := cvAPDBInstanceDigestV2("COMP", []byte("holder persistence"))
+	instance, err := cvAPDBInstanceDigestScalar("COMP", []byte("holder persistence"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := cvAPDBEncodeV2(instance, []byte("first immutable APDB payload"), params.recoveryThreshold, len(cfg.OldCommittee), 1024)
+	encoded, err := cvAPDBEncodeScalar(instance, []byte("first immutable APDB payload"), params.recoveryThreshold, len(cfg.OldCommittee), 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
 	root := t.TempDir()
-	store, err := newCVAPDBHolderStoreV2(root)
+	store, err := newCVAPDBHolderStoreScalar(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,7 @@ func TestCVAPDBHolderStoreV2PersistsBeforeStoredShareAndRejectsRootConflict(t *t
 	if err != nil {
 		t.Fatalf("persist and sign APDB store: %v", err)
 	}
-	statement, _ := cvAPDBStoredStatementV2(instance, encoded.root)
+	statement, _ := cvAPDBStoredStatementScalar(instance, encoded.root)
 	if !signer.VerifyShare(holder, cvAPDBStoredDomain, statement, share) {
 		t.Fatal("invalid APDB share released after persistence")
 	}
@@ -51,7 +51,7 @@ func TestCVAPDBHolderStoreV2PersistsBeforeStoredShareAndRejectsRootConflict(t *t
 	if err != nil || persisted.Index != 2 {
 		t.Fatalf("read persisted APDB store: %v", err)
 	}
-	restarted, err := newCVAPDBHolderStoreV2(root)
+	restarted, err := newCVAPDBHolderStoreScalar(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +59,7 @@ func TestCVAPDBHolderStoreV2PersistsBeforeStoredShareAndRejectsRootConflict(t *t
 	if err != nil || !bytes.Equal(replayed, share) {
 		t.Fatalf("matching APDB store was not restart-idempotent: %v", err)
 	}
-	conflicting, err := cvAPDBEncodeV2(instance, []byte("conflicting APDB payload"), params.recoveryThreshold, len(cfg.OldCommittee), 1024)
+	conflicting, err := cvAPDBEncodeScalar(instance, []byte("conflicting APDB payload"), params.recoveryThreshold, len(cfg.OldCommittee), 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,41 +72,41 @@ func TestCVAPDBHolderStoreV2PersistsBeforeStoredShareAndRejectsRootConflict(t *t
 	}
 }
 
-func TestCVAPDBHolderStoreV2AuthorizedAggregateReadBindsHandoffLock(t *testing.T) {
-	_, public := cvAgreementObjectV2Fixture(t)
+func TestCVAPDBHolderStoreScalarAuthorizedAggregateReadBindsHandoffLock(t *testing.T) {
+	_, public := cvAgreementObjectScalarFixture(t)
 	context := public.ContextDigest
 	poolDigest := hashBytes([]byte("authorized APDB pool"))
 	selectionDigest := hashBytes([]byte("authorized APDB selection"))
 	proposer := public.OldCommittee[0]
-	instance, err := cvAggregateInstanceDigestV2(context, proposer, poolDigest, selectionDigest)
+	instance, err := cvAggregateInstanceDigestScalar(context, proposer, poolDigest, selectionDigest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	encoded, err := cvAPDBEncodeV2(instance, []byte("decision-authorized aggregate payload"), public.Params.recoveryThreshold, len(public.OldCommittee), 1024)
+	encoded, err := cvAPDBEncodeScalar(instance, []byte("decision-authorized aggregate payload"), public.Params.recoveryThreshold, len(public.OldCommittee), 1024)
 	if err != nil {
 		t.Fatal(err)
 	}
-	header := cvAggregateHeaderV2{ContextDigest: context, ProposerID: proposer, PoolDigest: poolDigest, SelectionDigest: selectionDigest,
+	header := cvAggregateHeaderScalar{ContextDigest: context, ProposerID: proposer, PoolDigest: poolDigest, SelectionDigest: selectionDigest,
 		AggregateDigest: hashBytes([]byte("authorized aggregate")), PayloadDigest: hashBytes([]byte("authorized payload")),
 		APDBInstance: instance, APDBRoot: encoded.root}
-	storedStatement, err := cvAPDBStoredStatementV2(instance, encoded.root)
+	storedStatement, err := cvAPDBStoredStatementScalar(instance, encoded.root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	arc := cvAPDBLockV2{InstanceDigest: instance, Root: encoded.root,
-		Certificate: cvRecoverThresholdCertificateV2ForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, storedStatement)}
-	decisionStatement, err := cvDecisionStatementV2(context, &header, &arc)
+	arc := cvAPDBLockScalar{InstanceDigest: instance, Root: encoded.root,
+		Certificate: cvRecoverThresholdCertificateScalarForTest(t, public.APDBSigner, public.OldCommittee, cvAPDBStoredDomain, storedStatement)}
+	decisionStatement, err := cvDecisionStatementScalar(context, &header, &arc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	handoff := cvHandoffV2{ContextDigest: context, Header: header, ARC: arc,
-		DecCert: cvRecoverThresholdCertificateV2ForTest(t, public.ControlSigner, public.OldCommittee, cvDecisionCertificateV2Domain, decisionStatement)}
-	requestWire, err := cvAggregateRecoveryRequestV2CanonicalBytes(&cvAggregateRecoveryRequestV2{Handoff: handoff})
+	handoff := cvHandoffScalar{ContextDigest: context, Header: header, ARC: arc,
+		DecCert: cvRecoverThresholdCertificateScalarForTest(t, public.ControlSigner, public.OldCommittee, cvDecisionCertificateScalarDomain, decisionStatement)}
+	requestWire, err := cvAggregateRecoveryRequestScalarCanonicalBytes(&cvAggregateRecoveryRequestScalar{Handoff: handoff})
 	if err != nil {
 		t.Fatal(err)
 	}
 	holder := public.OldCommittee[3]
-	holderStore, err := newCVAPDBHolderStoreV2(t.TempDir())
+	holderStore, err := newCVAPDBHolderStoreScalar(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

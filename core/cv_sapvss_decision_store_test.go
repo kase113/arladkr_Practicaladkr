@@ -7,10 +7,10 @@ import (
 	"testing"
 )
 
-func TestCVDecisionSignStoreV2PersistsBeforeOneShotSignature(t *testing.T) {
-	object, public := cvAgreementObjectV2Fixture(t)
+func TestCVDecisionSignStoreScalarPersistsBeforeOneShotSignature(t *testing.T) {
+	object, public := cvAgreementObjectScalarFixture(t)
 	root := t.TempDir()
-	store, err := newCVDecisionSignStoreV2(root)
+	store, err := newCVDecisionSignStoreScalar(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -19,8 +19,8 @@ func TestCVDecisionSignStoreV2PersistsBeforeOneShotSignature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("persist and sign V2 decision: %v", err)
 	}
-	statement, err := cvDecisionStatementV2(public.ContextDigest, &object.Header, &object.ARC)
-	if err != nil || !public.ControlSigner.VerifyShare(member, cvDecisionCertificateV2Domain, statement, share) {
+	statement, err := cvDecisionStatementScalar(public.ContextDigest, &object.Header, &object.ARC)
+	if err != nil || !public.ControlSigner.VerifyShare(member, cvDecisionCertificateScalarDomain, statement, share) {
 		t.Fatalf("invalid persisted V2 decision share: %v", err)
 	}
 	record, err := store.Read(public.SID, public.Epoch, member)
@@ -38,7 +38,7 @@ func TestCVDecisionSignStoreV2PersistsBeforeOneShotSignature(t *testing.T) {
 
 	// Reconstructing the store models a process restart. The exact decision is
 	// idempotent and returns the same deterministic BLS share.
-	restarted, err := newCVDecisionSignStoreV2(root)
+	restarted, err := newCVDecisionSignStoreScalar(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,9 +59,9 @@ func TestCVDecisionSignStoreV2PersistsBeforeOneShotSignature(t *testing.T) {
 	}
 }
 
-func TestCVDecisionSignStoreV2ConcurrentConflictHasOneWinner(t *testing.T) {
-	object, public := cvAgreementObjectV2Fixture(t)
-	store, err := newCVDecisionSignStoreV2(t.TempDir())
+func TestCVDecisionSignStoreScalarConcurrentConflictHasOneWinner(t *testing.T) {
+	object, public := cvAgreementObjectScalarFixture(t)
+	store, err := newCVDecisionSignStoreScalar(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,12 +70,12 @@ func TestCVDecisionSignStoreV2ConcurrentConflictHasOneWinner(t *testing.T) {
 	second := object.Header
 	second.AggregateDigest = append([]byte(nil), first.AggregateDigest...)
 	second.AggregateDigest[0] ^= 1
-	headers := []*cvAggregateHeaderV2{&first, &second}
+	headers := []*cvAggregateHeaderScalar{&first, &second}
 	errors := make(chan error, len(headers))
 	var wait sync.WaitGroup
 	for _, header := range headers {
 		wait.Add(1)
-		go func(candidate *cvAggregateHeaderV2) {
+		go func(candidate *cvAggregateHeaderScalar) {
 			defer wait.Done()
 			_, signErr := store.SignHandoffOnce(public.SID, public.Epoch, member, public.ContextDigest, candidate, &object.ARC, public.ControlSigner)
 			errors <- signErr
@@ -94,9 +94,9 @@ func TestCVDecisionSignStoreV2ConcurrentConflictHasOneWinner(t *testing.T) {
 	}
 }
 
-func TestCVDecisionSignStoreV2RejectsNonLocalSignerWithoutRecord(t *testing.T) {
-	object, public := cvAgreementObjectV2Fixture(t)
-	store, err := newCVDecisionSignStoreV2(t.TempDir())
+func TestCVDecisionSignStoreScalarRejectsNonLocalSignerWithoutRecord(t *testing.T) {
+	object, public := cvAgreementObjectScalarFixture(t)
+	store, err := newCVDecisionSignStoreScalar(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -110,17 +110,17 @@ func TestCVDecisionSignStoreV2RejectsNonLocalSignerWithoutRecord(t *testing.T) {
 	}
 }
 
-func TestCVDecisionShareV2StrictCodec(t *testing.T) {
-	share := &cvDecisionShareV2{Statement: hashBytes([]byte("decision statement")), Signature: []byte{1, 2, 3}}
-	wire, err := cvDecisionShareV2CanonicalBytes(share)
+func TestCVDecisionShareScalarStrictCodec(t *testing.T) {
+	share := &cvDecisionShareScalar{Statement: hashBytes([]byte("decision statement")), Signature: []byte{1, 2, 3}}
+	wire, err := cvDecisionShareScalarCanonicalBytes(share)
 	if err != nil {
 		t.Fatal(err)
 	}
-	decoded, err := cvDecodeDecisionShareV2(wire)
+	decoded, err := cvDecodeDecisionShareScalar(wire)
 	if err != nil || !bytes.Equal(decoded.Statement, share.Statement) || !bytes.Equal(decoded.Signature, share.Signature) {
 		t.Fatalf("round-trip CV V2 decision share: %v", err)
 	}
-	if _, err := cvDecodeDecisionShareV2(append(append([]byte(nil), wire...), 0)); err == nil {
+	if _, err := cvDecodeDecisionShareScalar(append(append([]byte(nil), wire...), 0)); err == nil {
 		t.Fatal("accepted trailing CV V2 decision share bytes")
 	}
 }

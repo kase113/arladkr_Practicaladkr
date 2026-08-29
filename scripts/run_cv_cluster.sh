@@ -24,6 +24,7 @@ allow_experimental_apvss="${RLADKR_ALLOW_EXPERIMENTAL_APVSS:-false}"
 apvss_forced_fallback_count="${RLADKR_APVSS_FORCED_FALLBACK_COUNT:-0}"
 apvss_wait_all_acks="${RLADKR_APVSS_WAIT_ALL_ACKS:-false}"
 epochs="${RLADKR_CV_EPOCHS:-1}"
+epoch_id="${RLADKR_CV_EPOCH_ID:-1}"
 # Formal paper runs must pass an explicit sampling target; smoke keeps the
 # historical flow-verification default.
 cv_failure_target="${RLADKR_CV_FAILURE_TARGET:-smoke}"
@@ -72,7 +73,7 @@ generated_secret_dir="$root/keys/generated-private"
 log_dir="$root/logs"
 results_file="$root/cluster-results.log"
 
-if (( n <= 0 || f < 0 || n < 3 * f + 1 || epochs <= 0 || runs <= 0 || setup_batch_size <= 0 )); then
+if (( n <= 0 || f < 0 || n < 3 * f + 1 || epochs <= 0 || epoch_id <= 0 || runs <= 0 || setup_batch_size <= 0 )); then
   printf 'invalid committee parameters: n=%s f=%s\n' "$n" "$f" >&2
   exit 2
 fi
@@ -127,7 +128,7 @@ if [[ -n "$route_send_timeout" ]]; then
   bench_timeout_args+=( -route-send-timeout "$route_send_timeout" )
 fi
 (cd "$repo_dir" && go build -buildvcs=false -o "$binary" ./cmd/rladkrbench)
-"$binary" -n "$n" -f "$f" -runs 1 -cv-keygen-only \
+"$binary" -n "$n" -f "$f" -runs 1 -epoch "$epoch_id" -cv-keygen-only \
   -cv-public-key-dir "$public_dir" -cv-local-secret-dir "$generated_secret_dir"
 
 for ((i=0; i<n; i++)); do
@@ -210,7 +211,7 @@ for ((i=0; i<n; i++)); do
     export GOMAXPROCS="$node_gomaxprocs"
     export RLADKR_MVBA_PEER_WAIT_TARGET="$mvba_peer_wait_target"
     export RLADKR_MVBA_PEER_WAIT_MS="$mvba_peer_wait_ms"
-    if timeout --foreground --kill-after=5s "$runner_timeout" "$binary" -n "$n" -f "$f" -runs "$runs" -epochs "$epochs" \
+    if timeout --foreground --kill-after=5s "$runner_timeout" "$binary" -n "$n" -f "$f" -runs "$runs" -epochs "$epochs" -epoch "$epoch_id" \
       -transport tcp-distributed -cv-failure-target "$cv_failure_target" \
       -bind-host 127.0.0.1 -base-port "$base_port" -start-at "$start_at" -timeout "$epoch_timeout" \
 			"${bench_timeout_args[@]}" \

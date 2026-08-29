@@ -1,8 +1,4 @@
-// Package core — TCP-based MVBA transport for arladkr AgreeAgg.
-//
-// Replaces the in-process Go-channel MVBA with per-node TCP listeners so
-// each physical machine only runs its assigned subset of logical MVBA nodes.
-// Design mirrors dxt24's pkg/adkg/mvba_adapter.go.
+// Package core implements ARLADKR protocol and transport logic.
 package core
 
 import (
@@ -26,7 +22,7 @@ import (
 )
 
 var arlListenConfig = net.ListenConfig{
-	Control: func(network, address string, c syscall.RawConn) error {
+	Control: func(_ string, _ string, c syscall.RawConn) error {
 		var ctrlErr error
 		err := c.Control(func(fd uintptr) {
 			ctrlErr = syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
@@ -413,12 +409,9 @@ func (n *arladkrTCPNet) Broadcast(msg dmvba.ProtocolMessage) error {
 }
 
 func (n *arladkrTCPNet) Send(to int, msg dmvba.ProtocolMessage) error {
-	sendStart := time.Now()
 	if to == n.id {
 		if to < 0 || to >= len(n.hub.recv) {
-			err := fmt.Errorf("arladkr mvba tcp: local recv missing for node %d", to)
-			n.hub.recordMVBANetSend(n.id, arlMVBANetTag(msg), time.Since(sendStart), 0, true, false, 0, err)
-			return err
+			return fmt.Errorf("arladkr mvba tcp: local recv missing for node %d", to)
 		}
 		localMsg := dmvba.ReceivedMessage{From: n.id, Msg: msg}
 		select {
@@ -427,24 +420,18 @@ func (n *arladkrTCPNet) Send(to int, msg dmvba.ProtocolMessage) error {
 			n.hub.recordSendRecvBytes(frameBytes)
 			n.hub.recordEquivalentSend(msg, frameBytes)
 			n.hub.recordEquivalentRecv(msg, frameBytes)
-			n.hub.recordMVBANetSend(n.id, arlMVBANetTag(msg), time.Since(sendStart), 0, true, false, 0, nil)
 			return nil
 		case <-time.After(n.hub.enqueueTO):
-			err := fmt.Errorf("arladkr mvba tcp: local enqueue timeout %d->%d", n.id, to)
-			n.hub.recordMVBANetSend(n.id, arlMVBANetTag(msg), time.Since(sendStart), 0, true, false, 0, err)
-			return err
+			return fmt.Errorf("arladkr mvba tcp: local enqueue timeout %d->%d", n.id, to)
 		}
 	}
 	wire := arladkrMVBAWire{From: n.id, Msg: msg}
 	addr, ok := n.hub.addrByID[to]
 	if !ok || addr == "" {
-		err := fmt.Errorf("arladkr mvba tcp: addr missing for node %d", to)
-		n.hub.recordMVBANetSend(n.id, arlMVBANetTag(msg), time.Since(sendStart), 0, false, false, 0, err)
-		return err
+		return fmt.Errorf("arladkr mvba tcp: addr missing for node %d", to)
 	}
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(wire); err != nil {
-		n.hub.recordMVBANetSend(n.id, arlMVBANetTag(msg), time.Since(sendStart), 0, false, false, 0, err)
 		return err
 	}
 	body := buf.Bytes()
@@ -468,31 +455,24 @@ func (n *arladkrTCPNet) Send(to int, msg dmvba.ProtocolMessage) error {
 	}
 
 	if arlIntFromEnv("RLADKR_MVBA_CONN_REUSE", 1) != 0 {
-		lockWait, poolHit, reconnects, err := n.sendWithConnReuse(to, addr, msg, writeFrame)
-		n.hub.recordMVBANetSend(n.id, arlMVBANetTag(msg), time.Since(sendStart), lockWait, false, poolHit, reconnects, err)
-		return err
+		return n.sendWithConnReuse(to, addr, msg, writeFrame)
 	}
 
 	// Dial new connection with retry.
-	reconnects := 0
 	for attempt := 0; attempt < n.hub.retries; attempt++ {
 		conn, err := arlDialWithBandwidth("tcp", addr, n.hub.dialTO)
 		if err != nil {
 			time.Sleep(time.Duration(attempt+1) * n.hub.backoff)
 			continue
 		}
-		reconnects++
 		err = writeFrame(conn)
 		_ = conn.Close()
 		if err == nil {
-			n.hub.recordMVBANetSend(n.id, arlMVBANetTag(msg), time.Since(sendStart), 0, false, false, reconnects, nil)
 			return nil
 		}
 		time.Sleep(time.Duration(attempt+1) * n.hub.backoff)
 	}
-	err := fmt.Errorf("arladkr mvba tcp send failed %d->%d", n.id, to)
-	n.hub.recordMVBANetSend(n.id, arlMVBANetTag(msg), time.Since(sendStart), 0, false, false, reconnects, err)
-	return err
+	return fmt.Errorf("arladkr mvba tcp send failed %d->%d", n.id, to)
 }
 
 func (h *arladkrTCPHub) recordSentBytes(n int) {
@@ -549,27 +529,6 @@ func lenBufAndBodySize(msg dmvba.ProtocolMessage, from int) int {
 		return 0
 	}
 	return 4 + buf.Len()
-}
-
-func arlMVBANetTag(msg dmvba.ProtocolMessage) string {
-	if msg.Tag == dmvba.TagACSMVBA {
-		if inner, ok := msg.Body.(dmvba.ProtocolMessage); ok {
-			return string(msg.Tag) + "/" + string(inner.Tag)
-		}
-	}
-	return string(msg.Tag)
-}
-
-func (h *arladkrTCPHub) recordMVBANetSend(
-	id int,
-	tag string,
-	sendDur time.Duration,
-	lockWait time.Duration,
-	local bool,
-	poolHit bool,
-	reconnects int,
-	err error,
-) {
 }
 
 func arlMVBAPoolLanes(n int) int {
@@ -639,10 +598,7 @@ func arlMVBALane(msg dmvba.ProtocolMessage, lanes int) int {
 	return int(h % uint32(lanes))
 }
 
-func (n *arladkrTCPNet) sendWithConnReuse(to int, addr string, msg dmvba.ProtocolMessage, writeFrame func(net.Conn) error) (time.Duration, bool, int, error) {
-	var lockWait time.Duration
-	poolHit := false
-	reconnects := 0
+func (n *arladkrTCPNet) sendWithConnReuse(to int, addr string, msg dmvba.ProtocolMessage, writeFrame func(net.Conn) error) error {
 	poolKey := arlMVBAPoolKey(to, addr, msg, n.hub.poolLanes)
 	n.hub.poolMu.Lock()
 	if n.hub.conns == nil {
@@ -650,14 +606,11 @@ func (n *arladkrTCPNet) sendWithConnReuse(to int, addr string, msg dmvba.Protoco
 	}
 	pc, ok := n.hub.conns[poolKey]
 	if ok {
-		poolHit = true
-		lockStart := time.Now()
 		pc.mu.Lock()
-		lockWait += time.Since(lockStart)
 		n.hub.poolMu.Unlock()
 		if err := writeFrame(pc.conn); err == nil {
 			pc.mu.Unlock()
-			return lockWait, poolHit, reconnects, nil
+			return nil
 		}
 		_ = pc.conn.Close()
 		pc.mu.Unlock()
@@ -671,7 +624,6 @@ func (n *arladkrTCPNet) sendWithConnReuse(to int, addr string, msg dmvba.Protoco
 			time.Sleep(time.Duration(attempt+1) * n.hub.backoff)
 			continue
 		}
-		reconnects++
 		if err := writeFrame(conn); err == nil {
 			n.hub.poolMu.Lock()
 			if n.hub.conns == nil {
@@ -684,12 +636,12 @@ func (n *arladkrTCPNet) sendWithConnReuse(to int, addr string, msg dmvba.Protoco
 				n.hub.poolMu.Unlock()
 				_ = conn.Close()
 			}
-			return lockWait, poolHit, reconnects, nil
+			return nil
 		}
 		_ = conn.Close()
 		time.Sleep(time.Duration(attempt+1) * n.hub.backoff)
 	}
-	return lockWait, poolHit, reconnects, fmt.Errorf("arladkr mvba tcp send failed %d->%d", n.id, to)
+	return fmt.Errorf("arladkr mvba tcp send failed %d->%d", n.id, to)
 }
 
 func (h *arladkrTCPHub) closeConns() {

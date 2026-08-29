@@ -97,7 +97,7 @@ type EpochResult struct {
 	CVARCHolderCount                        int
 	CVRecoveredShardCount                   int
 	CVVerifiedReceiptCount                  int
-	CVSampling                              CVV2SamplingReport
+	CVSampling                              CVScalarSamplingReport
 	CVLeafBuildLatency                      time.Duration
 	CVComponentDisperseLatency              time.Duration
 	CVComponentCollectionLatency            time.Duration

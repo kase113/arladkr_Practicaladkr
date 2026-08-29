@@ -22,6 +22,8 @@ coverage.*
 .DS_Store
 .idea/
 .vscode/
+__pycache__/
+*.py[cod]
 
 # Terraform local state and provider cache
 **/.terraform/

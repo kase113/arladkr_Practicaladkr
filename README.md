@@ -1,95 +1,86 @@
-# ARL-ADKR Go Prototype
+# ARL-ADKR and PracticalADKR
 
-This repository contains one ARL-ADKR research path built around the
-scalar-output CV-sAPVSS construction. It does not expose interchangeable PVSS
-providers or legacy agreement/recovery modes.
+Go implementations and benchmark runners for ARL-ADKR and PracticalADKR.
 
-## Protocol path
+## Prerequisites
 
-```text
-scalar/group CV-sAPVSS V2 ACK/fallback leaf
--> component APDB lock and verified catalog
--> eligibility coin and sampled proposer/validator sets
--> Pool/PoolCert and contributor-coin aggregate
--> aggregate APDB lock and sampled VCert
--> one direct predicate-bearing MVBA
--> DecCert handoff and new-committee aggregate recovery
--> persist scalar shares, exchange proofs, interpolate public key
-```
+- Go 1.26+, Bash, GNU `timeout`, and `awk`
+- A sibling `dumbomvba-go` checkout referenced by `go.mod`
+- AWS benchmarks: Terraform, Python 3 with `boto3`, AWS CLI v2, and an authenticated profile
 
-For each receiver, the V2 transcript contains radix ciphertexts for one scalar
-share and one group ElGamal ciphertext for its Pedersen blinding. ACK receivers
-provide an identity-bound ownership statement; the complement set carries the
-fixed aggregated range/link evidence. Aggregation combines ciphertexts and
-commitments homomorphically but never aggregates component proofs: every
-selected leaf is decoded and verified again.
+## Running and benchmarking locally
 
-The agreement object binds the canonical Pool, selected contributors,
-aggregate APDB reference and VCert. Threshold-signature shares remain local to
-their collectors; only recovered certificates enter the public transcript.
-There is one V2 MVBA decision and one authorized aggregate recovery.
+Run from this directory. Use a new, empty output directory for each run.
 
-## Build and test
-
-The module expects its MVBA dependency as a sibling checkout because `go.mod`
-contains `replace dumbomvba_go => ../dumbomvba-go`.
+ARL-ADKR, one epoch:
 
 ```sh
-go test ./... -run '^$' -count=1
-go test ./core -count=1 -timeout=10m
-go test ./cmd/rladkrbench -count=1 -timeout=5m
-go test -race ./core -run 'Ready|AggregateManifest|LocalARC' -count=1 -timeout=5m
-go build -buildvcs=false -o bin/rladkrbench ./cmd/rladkrbench
+RLADKR_CV_FAILURE_TARGET=original \
+  scripts/run_cv_cluster.sh 16 5 /tmp/arladkr-run 22000
 ```
 
-Run a local multi-process TCP cluster:
+ARL-ADKR, serial epochs:
 
 ```sh
-./scripts/run_cv_cluster.sh 4 1 /tmp/arladkr-cv 20000
+RLADKR_CV_FAILURE_TARGET=high-assurance \
+  scripts/run_cv_epoch_series.sh 16 5 10 /tmp/arladkr-series 22000
 ```
 
-Relevant experiment controls are `-f-old`, `-f-new`, `-kappa`,
-`-cv-proposer-sample`, `-cv-validator-sample`, the explicit failure target,
-network timeouts, and V2 key/store directories. `-cv-failure-target original`
-uses the paper's total budget `Delta=1e-10`; `high-assurance` uses
-`Delta=2^-64/525600`. The solver allocates `Delta/2` to proposer and validator
-sampling separately and chooses the smallest samples from the exact
-finite-population bounds for the configured `n,f`. Benchmark output labels the network path as
-`cv-sapvss-v2-scalar-group` / `single-mvba-v2`; `cmd/cvv2ref` uses a distinct
-reference-only label.
-
-`cmd/cvv2ref` emits one `arladkr-cvv2-reference-report-v1` JSON object with a
-stable parameter-derived experiment ID, sampling manifest, ordered raw runs,
-and mean timing/size metrics. Smoke runs are labeled `functional-smoke` and
-carry no negligible-failure claim. Secure sampling points can be validated
-without executing a very large cryptographic reference epoch:
+PracticalADKR, one epoch:
 
 ```sh
-go run ./cmd/cvv2ref -old-n 4 -old-f 1 -new-n 4 -new-f 1 -runs 1
-go run ./cmd/cvv2ref -manifest-only -old-n 128 -old-f 42 \
-  -new-n 128 -new-f 42 -failure-target original
-go run ./cmd/cvv2ref -matrix-file experiments/cvv2_reference_matrix_v1.json \
-  -matrix-manifest-only
+PRACTICAL_MP_N=16 PRACTICAL_MP_F=5 PRACTICAL_MP_PORT_BASE=23000 \
+PRACTICAL_MP_RUN_DIR=/tmp/practical-run \
+  experiments/practical-adkr/scripts/run_practical_multiprocess_n7.sh
 ```
 
-The versioned pilot matrix contains three executable functional reference
-points and ten secure sampling-only points covering both paper profiles at
-`n=32,48,64,96,128`. Omitting `-matrix-manifest-only`
-runs only the functional points; secure points never trigger large-committee
-cryptographic execution.
+PracticalADKR, serial epochs:
 
-## Security boundary
+```sh
+experiments/practical-adkr/scripts/run_practical_epoch_series.sh \
+  16 5 10 /tmp/practical-series 23000
+```
 
-- Static corruption is the current target; dynamic corruption and forward-secure
-  encryption are outside this implementation scope.
-- The fixed V2 fallback adapter is research code. This repository tests its
-  canonical statement, range/link binding and cross-domain rejection; it does
-  not replace the paper's security proof or an independent implementation
-  review.
-- Component RS plus Merkle membership is a retrievability prototype, not a full
-  Byzantine codeword proof. Recovered payload, leaf digest, and APVSS validity
-  are still checked before aggregation.
-- The current experiment is a fresh single epoch with co-located old/new roles.
-  Physical role separation, multi-epoch key rotation and incomplete-epoch
-  restart are outside the claimed experimental boundary. Both `rladkrbench`
-  and `run_cv_cluster.sh` reject any `runs`/`epochs` shape other than `1/1`.
+Arguments are `n`, `f`, epoch count (series only), output directory, and base
+TCP port. Results include quorum status, latency, consensus hash, and protocol
+sent bytes per node.
+
+## Running and benchmarking on AWS
+
+The Terraform module is `deployment/terraform/aws-smoke`; it provisions Spot
+instances and optional private SSM/S3 endpoints. Keep tfvars, state, keys, and
+artifacts outside version control.
+
+```sh
+export AWS_PROFILE=<profile>
+aws sso login --profile "$AWS_PROFILE"
+terraform -chdir=deployment/terraform/aws-smoke init
+terraform -chdir=deployment/terraform/aws-smoke validate
+python3 -m deployment.fabric.aws_orchestrator \
+  --experiment-group <run-tag> --var-file /path/to/run.tfvars \
+  --state-dir "$PWD/deployment/aws-state/<run-tag>" plan
+python3 -m deployment.fabric.aws_orchestrator \
+  --experiment-group <run-tag> --var-file /path/to/run.tfvars \
+  --state-dir "$PWD/deployment/aws-state/<run-tag>" apply
+```
+
+Use the Fabric facade for tagged status, explicit SSM commands, quorum-based
+collection, serial epochs, and cleanup:
+
+```sh
+python3 -m deployment.fabric.aws_orchestrator --region <region> \
+  --experiment-group <run-tag> status
+python3 -m deployment.fabric.aws_orchestrator --region <region> \
+  --experiment-group <run-tag> series \
+  --instance-id i-EXAMPLE --project <project> --run-id-prefix <prefix> \
+  --epochs 5 --quorum <n-f> \
+  --command-template 'sudo /opt/runner/run-epoch --run-id {run_id} --epoch {epoch}' \
+  --cleanup-template 'sudo /opt/runner/cleanup-epoch --run-id {run_id}' \
+  --out /tmp/series.json
+python3 -m deployment.fabric.aws_orchestrator --region <region> \
+  --experiment-group <run-tag> cleanup --confirm-run-id <run-tag> --stop
+```
+
+Repeat `--instance-id` for all targets. Collection returns the first
+deterministic quorum and cancels late SSM requests; full-fleet completion is not
+required. Destroy Terraform resources separately after reviewing the state.

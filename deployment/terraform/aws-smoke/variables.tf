@@ -111,6 +111,11 @@ variable "experiment_group" {
   description = "Unique tag used to discover and destroy only this experiment."
   type        = string
   default     = "smoke-n10-use1-20260817-142937"
+
+  validation {
+    condition     = length(var.experiment_group) >= 3 && length(var.experiment_group) <= 37 && can(regex("^[A-Za-z0-9-]+$", var.experiment_group))
+    error_message = "experiment_group must be 3-37 alphanumeric/dash characters so IAM name prefixes remain valid."
+  }
 }
 
 variable "root_volume_gb" {
